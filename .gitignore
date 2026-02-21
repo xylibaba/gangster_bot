@@ -1,0 +1,27 @@
+# 🔐 Конфиденциальные файлы
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+
+# IDE
+.venv/
+.vscode/
+.idea/
+*.swp
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Временные файлы
+temp/
+*.tmp
