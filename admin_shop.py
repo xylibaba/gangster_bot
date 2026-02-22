@@ -81,22 +81,36 @@ async def show_admin_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
+    # Обработка как callback так и обычного message
+    if update.callback_query:
+        await update.callback_query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
+    else:
+        await update.message.reply_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
 
 # Обмен валюты на деньги
 async def admin_exchange_currency(update: Update, context: ContextTypes.DEFAULT_TYPE, amount=None):
-    query = update.callback_query
-    user_id = query.from_user.id
+    if update.callback_query:
+        query = update.callback_query
+        user_id = query.from_user.id
+    else:
+        user_id = update.effective_user.id
+        query = None
     
     user = get_user(user_id)
     if not user or not user[6]:
-        await query.answer("❌ доступ запрещен!", show_alert=True)
+        if query:
+            await query.answer("❌ доступ запрещен!", show_alert=True)
+        else:
+            await update.message.reply_text("❌ доступ запрещен!")
         return
     
     current_currency = get_admin_currency(user_id)
     
     if current_currency is None or current_currency == 0:
-        await query.answer("❌ у вас нет админ валюты для обмена!", show_alert=True)
+        if query:
+            await query.answer("❌ у вас нет админ валюты для обмена!", show_alert=True)
+        else:
+            await update.message.reply_text("❌ у вас нет админ валюты для обмена!")
         return
     
     if not can_exchange_admin_currency(user_id):
@@ -106,15 +120,22 @@ async def admin_exchange_currency(update: Update, context: ContextTypes.DEFAULT_
         if remaining_time and remaining_time > 0:
             hours = int(remaining_time // 3600)
             minutes = int((remaining_time % 3600) // 60)
-            await query.answer(f"❌ следующий обмен доступен через {hours}ч {minutes}мин", show_alert=True)
+            if query:
+                await query.answer(f"❌ следующий обмен доступен через {hours}ч {minutes}мин", show_alert=True)
+            else:
+                await update.message.reply_text(f"❌ следующий обмен доступен через {hours}ч {minutes}мин")
         else:
-            await query.answer(f"❌ следующий обмен недоступен", show_alert=True)
+            if query:
+                await query.answer(f"❌ следующий обмен недоступен", show_alert=True)
+            else:
+                await update.message.reply_text("❌ следующий обмен недоступен")
         return
     
     if amount is None:
         # Предлагаем выбрать сумму
         context.user_data['exchange_currency_mode'] = True
-        await query.answer()
+        if query:
+            await query.answer()
         
         # Получаем сколько осталось обменять за эту неделю
         remaining_coins = get_exchange_remaining_coins(user_id)
@@ -149,33 +170,53 @@ async def admin_exchange_currency(update: Update, context: ContextTypes.DEFAULT_
 
 выберите сумму для обмена:"""
         
-        await query.edit_message_text(
-            exchange_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
-        )
+        if query:
+            await query.edit_message_text(
+                exchange_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                exchange_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
         return
     
     # Проверяем баланс
     if amount > current_currency:
-        await query.answer(f"❌ недостаточно валюты! (у вас {current_currency})", show_alert=True)
+        if query:
+            await query.answer(f"❌ недостаточно валюты! (у вас {current_currency})", show_alert=True)
+        else:
+            await update.message.reply_text(f"❌ недостаточно валюты! (у вас {current_currency})")
         return
     
     # Выполняем обмен
     new_money = exchange_admin_currency_to_money(user_id, amount)
     
     if new_money is None:
-        await query.answer("❌ ошибка при выполнении обмена!", show_alert=True)
+        if query:
+            await query.answer("❌ ошибка при выполнении обмена!", show_alert=True)
+        else:
+            await update.message.reply_text("❌ ошибка при выполнении обмена!")
         return
     
     # Успешно
-    await query.answer(f"✅ обмен выполнен! получено {format_money(amount)}", show_alert=True)
+    if query:
+        await query.answer(f"✅ обмен выполнен! получено {format_money(amount)}", show_alert=True)
+    else:
+        await update.message.reply_text(f"✅ обмен выполнен! получено {format_money(amount)}")
     
     # Обновляем магазин
     await show_admin_shop(update, context)
 
 # Показать донаты в магазине админа
 async def show_admin_donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.callback_query:
+        await update.message.reply_text("❌ невозможно выполнить эту операцию в этом контексте!")
+        return
+    
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -216,6 +257,10 @@ async def show_admin_donate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Показать аксессуары в магазине админа
 async def show_admin_accessories(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.callback_query:
+        await update.message.reply_text("❌ невозможно выполнить эту операцию в этом контексте!")
+        return
+    
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -238,6 +283,10 @@ async def show_admin_accessories(update: Update, context: ContextTypes.DEFAULT_T
         [InlineKeyboardButton("назад", callback_data="admin_shop_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if not update.callback_query:
+        await update.message.reply_text("❌ невозможно выполнить эту операцию в этом контексте!")
+        return
     
     await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -294,6 +343,60 @@ async def handle_admin_shop_callback(update: Update, context: ContextTypes.DEFAU
         elif data.startswith("admin_exchange_amount_"):
             amount = int(data.replace("admin_exchange_amount_", ""))
             await admin_exchange_currency(update, context, amount)
+        elif data.startswith("admin_buy_donate_"):
+            cost = int(data.replace("admin_buy_donate_", ""))
+            await admin_buy_donate(update, context, cost)
+        else:
+            await query.answer("❌ неизвестная команда!", show_alert=True)
     except Exception as e:
         print(f"❌ ошибка в handle_admin_shop_callback: {e}")
+        await query.answer("❌ произошла ошибка!", show_alert=True)
+
+# Функция покупки доната за админ коины
+async def admin_buy_donate(update: Update, context: ContextTypes.DEFAULT_TYPE, cost):
+    """Покупка доната за админ валюту"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    try:
+        user = get_user(user_id)
+        if not user or not user[6]:
+            await query.answer("❌ доступ запрещен!", show_alert=True)
+            return
+        
+        current_currency = get_admin_currency(user_id)
+        if current_currency is None or current_currency == 0:
+            await query.answer("❌ у вас нет админ валюты!", show_alert=True)
+            return
+        
+        if cost > current_currency:
+            await query.answer(f"❌ недостаточно валюты! (нужно {cost}, у вас {current_currency})", show_alert=True)
+            return
+        
+        # Получаем нужный пакет доната
+        if cost == 1:
+            donate_title = "тестовый набор"
+        elif cost == 5:
+            donate_title = "гангстер плюс"
+        else:
+            await query.answer("❌ неизвестный пакет доната!", show_alert=True)
+            return
+        
+        # Вычитаем валюту
+        new_currency = update_admin_currency(user_id, -cost)
+        
+        if new_currency is None:
+            await query.answer("❌ ошибка при выполнении покупки!", show_alert=True)
+            return
+        
+        # Показываем успешное сообщение
+        await query.answer(f"✅ вы купили {donate_title}!", show_alert=True)
+        
+        # Возвращаемся в магазин
+        await show_admin_donate(update, context)
+        
+    except ValueError:
+        await query.answer("❌ ошибка обработки данных", show_alert=True)
+    except Exception as e:
+        print(f"❌ ошибка при покупке доната: {e}")
         await query.answer("❌ произошла ошибка!", show_alert=True)

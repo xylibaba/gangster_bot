@@ -1026,11 +1026,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, main_admin_i
     if update.message:
         if USE_PHOTOS:
             try:
-                await update.message.reply_photo(
-                    photo=open('images/registration.jpg', 'rb') if cached_photo_exists('images/registration.jpg') else None,
-                    caption=message_text,
-                    reply_markup=reply_markup
-                )
+                photo_path = 'images/registration.jpg'
+                if cached_photo_exists(photo_path):
+                    with open(photo_path, 'rb') as photo:
+                        await update.message.reply_photo(
+                            photo=photo,
+                            caption=message_text,
+                            reply_markup=reply_markup
+                        )
+                else:
+                    await update.message.reply_text(message_text, reply_markup=reply_markup)
             except Exception as e:
                 await update.message.reply_text(message_text, reply_markup=reply_markup)
         else:
@@ -1038,13 +1043,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, main_admin_i
     else:
         try:
             if USE_PHOTOS:
-                await update.callback_query.edit_message_media(
-                    media=InputMediaPhoto(
-                        open('images/registration.jpg', 'rb') if os.path.exists('images/registration.jpg') else None,
-                        caption=message_text
-                    ),
-                    reply_markup=reply_markup
-                )
+                photo_path = 'images/registration.jpg'
+                if os.path.exists(photo_path):
+                    with open(photo_path, 'rb') as photo:
+                        await update.callback_query.edit_message_media(
+                            media=InputMediaPhoto(
+                                photo,
+                                caption=message_text
+                            ),
+                            reply_markup=reply_markup
+                        )
+                else:
+                    await update.callback_query.edit_message_text(
+                        message_text,
+                        reply_markup=reply_markup
+                    )
             else:
                 await update.callback_query.edit_message_text(
                     message_text,
@@ -1078,13 +1091,32 @@ async def choose_gender(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         if USE_PHOTOS:
-            await update.callback_query.edit_message_media(
-                media=InputMediaPhoto(
-                    open('images/gender_choice.jpg', 'rb') if cached_photo_exists('images/gender_choice.jpg') else 'images/registration.jpg',
-                    caption=message_text
-                ),
-                reply_markup=reply_markup
-            )
+            photo_path = 'images/gender_choice.jpg'
+            fallback_path = 'images/registration.jpg'
+            
+            if cached_photo_exists(photo_path):
+                with open(photo_path, 'rb') as photo:
+                    await update.callback_query.edit_message_media(
+                        media=InputMediaPhoto(
+                            photo,
+                            caption=message_text
+                        ),
+                        reply_markup=reply_markup
+                    )
+            elif cached_photo_exists(fallback_path):
+                with open(fallback_path, 'rb') as photo:
+                    await update.callback_query.edit_message_media(
+                        media=InputMediaPhoto(
+                            photo,
+                            caption=message_text
+                        ),
+                        reply_markup=reply_markup
+                    )
+            else:
+                await update.callback_query.edit_message_text(
+                    message_text,
+                    reply_markup=reply_markup
+                )
         else:
             await update.callback_query.edit_message_text(
                 message_text,
@@ -1119,13 +1151,32 @@ async def choose_color(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         if USE_PHOTOS:
-            await update.callback_query.edit_message_media(
-                media=InputMediaPhoto(
-                    open('images/color_choice.jpg', 'rb') if cached_photo_exists('images/color_choice.jpg') else 'images/registration.jpg',
-                    caption=message_text
-                ),
-                reply_markup=reply_markup
-            )
+            photo_path = 'images/color_choice.jpg'
+            fallback_path = 'images/registration.jpg'
+            
+            if cached_photo_exists(photo_path):
+                with open(photo_path, 'rb') as photo:
+                    await update.callback_query.edit_message_media(
+                        media=InputMediaPhoto(
+                            photo,
+                            caption=message_text
+                        ),
+                        reply_markup=reply_markup
+                    )
+            elif cached_photo_exists(fallback_path):
+                with open(fallback_path, 'rb') as photo:
+                    await update.callback_query.edit_message_media(
+                        media=InputMediaPhoto(
+                            photo,
+                            caption=message_text
+                        ),
+                        reply_markup=reply_markup
+                    )
+            else:
+                await update.callback_query.edit_message_text(
+                    message_text,
+                    reply_markup=reply_markup
+                )
         else:
             await update.callback_query.edit_message_text(
                 message_text,
@@ -1157,13 +1208,32 @@ async def choose_name(update: Update, context: ContextTypes.DEFAULT_TYPE, color:
     
     try:
         if USE_PHOTOS:
-            message = await update.callback_query.edit_message_media(
-                media=InputMediaPhoto(
-                    open('images/name_choice.jpg', 'rb') if cached_photo_exists('images/name_choice.jpg') else 'images/registration.jpg',
-                    caption=message_text
-                ),
-                reply_markup=reply_markup
-            )
+            photo_path = 'images/name_choice.jpg'
+            fallback_path = 'images/registration.jpg'
+            
+            if cached_photo_exists(photo_path):
+                with open(photo_path, 'rb') as photo:
+                    message = await update.callback_query.edit_message_media(
+                        media=InputMediaPhoto(
+                            photo,
+                            caption=message_text
+                        ),
+                        reply_markup=reply_markup
+                    )
+            elif cached_photo_exists(fallback_path):
+                with open(fallback_path, 'rb') as photo:
+                    message = await update.callback_query.edit_message_media(
+                        media=InputMediaPhoto(
+                            photo,
+                            caption=message_text
+                        ),
+                        reply_markup=reply_markup
+                    )
+            else:
+                message = await update.callback_query.edit_message_text(
+                    message_text,
+                    reply_markup=reply_markup
+                )
         else:
             message = await update.callback_query.edit_message_text(
                 message_text,
@@ -1178,11 +1248,28 @@ async def choose_name(update: Update, context: ContextTypes.DEFAULT_TYPE, color:
     except Exception as e:
         # если не удалось отредактировать, отправляем новое сообщение
         if USE_PHOTOS:
-            message = await update.callback_query.message.reply_photo(
-                photo=open('images/name_choice.jpg', 'rb') if cached_photo_exists('images/name_choice.jpg') else 'images/registration.jpg',
-                caption=message_text,
-                reply_markup=reply_markup
-            )
+            photo_path = 'images/name_choice.jpg'
+            fallback_path = 'images/registration.jpg'
+            
+            if cached_photo_exists(photo_path):
+                with open(photo_path, 'rb') as photo:
+                    message = await update.callback_query.message.reply_photo(
+                        photo=photo,
+                        caption=message_text,
+                        reply_markup=reply_markup
+                    )
+            elif cached_photo_exists(fallback_path):
+                with open(fallback_path, 'rb') as photo:
+                    message = await update.callback_query.message.reply_photo(
+                        photo=photo,
+                        caption=message_text,
+                        reply_markup=reply_markup
+                    )
+            else:
+                message = await update.callback_query.message.reply_text(
+                    message_text,
+                    reply_markup=reply_markup
+                )
         else:
             message = await update.callback_query.message.reply_text(
                 message_text,
@@ -1544,6 +1631,17 @@ def get_user_by_name(name):
 
 # универсальная функция для обновления любого поля пользователя
 def update_user_field(user_id, field_name, value):
+    # Защита от SQL инъекций - белый список разрешенных полей
+    allowed_fields = {'name', 'color', 'gender', 'money', 'is_admin', 'is_main_admin', 
+                     'registered', 'banned', 'ban_duration', 'ban_start_time', 'banned_by', 
+                     'ban_reason', 'disable_transfer_confirmation', 'disable_transfer_notifications',
+                     'disable_news_notifications', 'disable_system_notifications', 'is_gangster_plus',
+                     'referrer_id', 'admin_currency', 'last_admin_exchange_time', 'admin_exchange_week_start',
+                     'admin_exchanged_this_week', 'admin_warnings', 'username'}
+    
+    if field_name not in allowed_fields:
+        raise ValueError(f"Invalid field: {field_name}")
+    
     conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
     cursor = conn.cursor()
     try:

@@ -2362,7 +2362,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await show_backgrounds_shop(update, context)
         
         # обработка магазина админ валюты
-        elif data.startswith("admin_") or data in ["admin_shop_exchange", "admin_shop_donate", "admin_shop_accessories", "admin_shop_backgrounds", "admin_shop_back", "admin_shop_no_money", "admin_shop_exchange_blocked"]:
+        elif data.startswith("admin_shop") or data.startswith("admin_exchange") or data.startswith("admin_buy"):
             if data == "admin_shop":
                 await show_admin_shop(update, context)
             else:

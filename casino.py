@@ -489,14 +489,10 @@ async def blackjack_double(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not game_state['game_active']:
         return
 
-    # Проверяем актуальный баланс для удвоения
-    user = get_user(user_id)
-    if not user or user[5] < game_state['bet_amount']:
-        await query.answer("❌ недостаточно средств для удвоения!", show_alert=True)
-        return
-
     # Удваиваем ставку
     game_state['bet_amount'] *= 2
+    
+    # Проверяем и снимаем баланс атомарно (в одной транзакции)
     new_balance = update_user_money(user_id, -game_state['bet_amount'] // 2, check_balance=True)
     
     if new_balance is None:

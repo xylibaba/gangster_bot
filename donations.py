@@ -134,7 +134,19 @@ async def handle_pack_navigation(update: Update, context: ContextTypes.DEFAULT_T
 # выбор способа оплаты
 async def handle_buy_pack_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    index = int(query.data.split("_")[-1])
+    try:
+        parts = query.data.split("_")
+        if len(parts) < 3:
+            await query.answer("❌ ошибка: некорректные данные", show_alert=True)
+            return
+        index = int(parts[-1])
+        if not (0 <= index < len(packs)):
+            await query.answer("❌ ошибка: неверный пакет", show_alert=True)
+            return
+    except (ValueError, IndexError):
+        await query.answer("❌ ошибка: некорректные данные", show_alert=True)
+        return
+    
     pack = packs[index]
     
     text = (
@@ -164,7 +176,15 @@ async def start_pack_stars_payment(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     
     try:
-        index = int(query.data.split("_")[-1])
+        parts = query.data.split("_")
+        if len(parts) < 3:
+            await query.answer("❌ ошибка: некорректные данные", show_alert=True)
+            return
+        index = int(parts[-1])
+        if not (0 <= index < len(packs)):
+            await query.answer("❌ ошибка: неверный пакет", show_alert=True)
+            return
+        
         pack = packs[index]
         
         await query.answer()
@@ -193,13 +213,25 @@ async def start_pack_crypto_payment(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     
     try:
-        index = int(query.data.split("_")[-1])
-        pack = packs[index]
-        
-        if crypto_bot_token == "вставить_токен_сюда":
-            await query.answer("⚠️ токен crypto bot не настроен!", show_alert=True)
+        parts = query.data.split("_")
+        if len(parts) < 3:
+            await query.answer("❌ ошибка: некорректные данные", show_alert=True)
             return
+        index = int(parts[-1])
+        if not (0 <= index < len(packs)):
+            await query.answer("❌ ошибка: неверный пакет", show_alert=True)
+            return
+    except (ValueError, IndexError):
+        await query.answer("❌ ошибка: некорректные данные", show_alert=True)
+        return
+    
+    pack = packs[index]
+    
+    if crypto_bot_token == "вставить_токен_сюда":
+        await query.answer("⚠️ токен crypto bot не настроен!", show_alert=True)
+        return
 
+    try:
         await query.answer()
         
         url = "https://pay.crypt.bot/api/invoices/create"
@@ -251,7 +283,11 @@ async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     
     if payload.startswith("pack_"):
         try:
-            index = int(payload.split("_")[-1])
+            parts = payload.split("_")
+            if len(parts) < 2:
+                await query.answer(ok=False, error_message="Invalid payload")
+                return
+            index = int(parts[-1])
             if 0 <= index < len(packs):
                 await query.answer(ok=True)
             else:
