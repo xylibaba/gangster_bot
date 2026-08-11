@@ -1,8 +1,16 @@
+import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 import logging
 import os
 import time
+import asyncio
 import sqlite3
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 
 # настройка логирования для библиотеки httpx
@@ -276,6 +284,54 @@ def init_db():
         )
     ''')
 
+    # Таблица для домов пользователей
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_homes (
+            user_id INTEGER PRIMARY KEY,
+            home_id INTEGER NOT NULL,
+            purchased_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+
+    # Таблица для шкафа со скинами в доме
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS home_wardrobe (
+            user_id INTEGER PRIMARY KEY,
+            slot1_skin_id INTEGER,
+            slot2_skin_id INTEGER,
+            slot3_skin_id INTEGER,
+            slot4_skin_id INTEGER,
+            slot5_skin_id INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+
+    # Таблица для бизнеса пользователей
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_business (
+            user_id INTEGER PRIMARY KEY,
+            business_id INTEGER NOT NULL,
+            purchased_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            raw_material INTEGER DEFAULT 0,
+            last_delivery_time REAL DEFAULT 0,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+
+    # Таблица для истории заказов сырья
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS business_raw_orders (
+            order_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            amount INTEGER NOT NULL,
+            ordered_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            delivery_time REAL,
+            expires_at REAL,
+            FOREIGN KEY (user_id) REFERENCES users (user_id)
+        )
+    ''')
+
     conn.commit()
     conn.close()
     print("✅ база данных инициализирована (таблицы созданы при необходимости)")
@@ -392,8 +448,35 @@ def get_user_activity_logs(user_id, limit=10):
     
     return logs
 
+def contains_emoji(text: str) -> bool:
+    """Проверяет наличие эмодзи в строке"""
+    import unicodedata
+    for char in text:
+        cat = unicodedata.category(char)
+        if cat in ('So', 'Cn'):
+            return True
+        code = ord(char)
+        if (0x1F600 <= code <= 0x1F64F) or \
+           (0x1F300 <= code <= 0x1F5FF) or \
+           (0x1F680 <= code <= 0x1F6FF) or \
+           (0x1F700 <= code <= 0x1F77F) or \
+           (0x1F780 <= code <= 0x1F7FF) or \
+           (0x1F800 <= code <= 0x1F8FF) or \
+           (0x1F900 <= code <= 0x1F9FF) or \
+           (0x1FA00 <= code <= 0x1FA6F) or \
+           (0x1FA70 <= code <= 0x1FAFF) or \
+           (0x2600 <= code <= 0x26FF) or \
+           (0x2700 <= code <= 0x27BF) or \
+           (0xFE00 <= code <= 0xFE0F) or \
+           (0x1F1E6 <= code <= 0x1F1FF):
+            return True
+    return False
+
 # функция для проверки ника
 def is_nickname_valid(nickname: str) -> tuple:
+    if contains_emoji(nickname):
+        return False, "❌ в нике нельзя использовать эмодзи! придумай имя без смайликов."
+
     nickname_lower = nickname.lower().strip()
     
     bot_gangster_variants = ['бот гангстер', 'ботгангстер', 'gangster bot', 'бот-гангстер']
@@ -986,16 +1069,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, main_admin_i
             print(f"✅ username главного админа обновлен: {username}")
     
     # обрабатываем параметр реф ссылки
-    if context.args and len(context.args) > 0:
+    args = getattr(context, 'args', None)
+    if args and len(args) > 0:
         try:
-            referrer_id = int(context.args[0])
+            referrer_id = int(args[0])
             # проверяем что реферер существует
             referrer = get_user(referrer_id)
             if referrer:
                 context.user_data['referrer_id'] = referrer_id
                 print(f"✅ параметр реф ссылки получен: {referrer_id}")
         except (ValueError, TypeError):
-            print(f"⚠️ неверный параметр реф ссылки: {context.args[0]}")
+            print(f"⚠️ неверный параметр реф ссылки: {args[0]}")
     
     # проверяем бан
     if is_user_banned(user_id):
@@ -1723,3 +1807,31 @@ def update_user_disable_system_notifications(user_id, disable):
     cursor.execute('UPDATE users SET disable_system_notifications = ? WHERE user_id = ?', (disable, user_id))
     conn.commit()
     conn.close()
+
+def get_all_user_ids():
+    """Получить список всех зарегистрированных не забаненных пользователей для рассылки"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT user_id FROM users WHERE banned = FALSE')
+        rows = cursor.fetchall()
+        return [row[0] for row in rows]
+    except Exception as e:
+        logger.error(f"Error fetching all user ids: {e}")
+        return []
+    finally:
+        conn.close()
+
+def get_news_subscribed_user_ids():
+    """Получить список пользователей для обычной новостной рассылки (не забаненные и с включенными новостными уведомлениями)"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT user_id FROM users WHERE banned = FALSE AND (disable_news_notifications = FALSE OR disable_news_notifications IS NULL)')
+        rows = cursor.fetchall()
+        return [row[0] for row in rows]
+    except Exception as e:
+        logger.error(f"Error fetching news subscribed user ids: {e}")
+        return []
+    finally:
+        conn.close()

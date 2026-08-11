@@ -1,10 +1,17 @@
+import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 import os
 import random
 import asyncio
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from registration import get_user, update_user_money
-from utils import format_money
+from utils import format_money, parse_amount
 from main_menu import show_work_menu, show_main_menu, show_settings, show_main_settings
 from shit_cleaner import start_shit_cleaning, cancel_cleaning
 from milker import start_milking, cancel_milking
@@ -21,36 +28,30 @@ def cached_photo_exists(filename):
         photo_cache[filename] = os.path.exists(filename)
     return photo_cache[filename]
 
+def get_card_value(card):
+    if card in ['J', 'Q', 'K']:
+        return 10
+    elif card == 'A':
+        return 11
+    else:
+        return int(card)
+
+def format_card(card, suit):
+    return f"[{card}{suit}]"
+
+def get_points_text(score):
+    if score % 10 == 1 and score != 11:
+        return f"{score} очко"
+    elif score % 10 in [2, 3, 4] and score not in [12, 13, 14]:
+        return f"{score} очка"
+    else:
+        return f"{score} очков"
+
+
 # Функция для парсинга суммы ставки
 def parse_bet_amount(bet_str: str, user_balance: int) -> int:
-    """Парсит сумму ставки с поддержкой форматирования"""
-    bet_str = bet_str.strip().lower().replace(' ', '').replace(',', '').replace('.', '')
-    
-    if bet_str == 'все':
-        return user_balance
-    
-    # Обрабатываем сокращения
-    multipliers = {
-        'ккккк': 10000000000000,
-        'кккк': 1000000000000,
-        'ккк': 1000000000,
-        'кк': 1000000,
-        'к': 1000
-    }
-    
-    for suffix, multiplier in multipliers.items():
-        if suffix in bet_str:
-            number_part = bet_str.replace(suffix, '')
-            try:
-                return int(float(number_part) * multiplier)
-            except ValueError:
-                return 0
-    
-    # Просто число
-    try:
-        return int(float(bet_str))
-    except ValueError:
-        return 0
+    """Парсит сумму ставки с поддержкой форматирования и дробных сокращений (напр. 1.5кк)"""
+    return parse_amount(bet_str, max_amount=user_balance)
 
 # Главное меню казино
 async def show_casino_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -324,7 +325,7 @@ async def play_slot_machine(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     message_text = "\n".join(message_parts)
 
     inline_keyboard = [
-        [InlineKeyboardButton("🎰 играть еще", callback_data="slot_play_again")]
+        [InlineKeyboardButton("играть еще", callback_data="slot_play_again")]
     ]
     reply_markup = InlineKeyboardMarkup(inline_keyboard)
 
@@ -617,13 +618,13 @@ async def blackjack_update_message(update: Update, context: ContextTypes.DEFAULT
 
     if game_state['game_active']:
         inline_keyboard = [
-            [InlineKeyboardButton("💰 удвоить", callback_data="blackjack_double")],
-            [InlineKeyboardButton("🃏 взять еще", callback_data="blackjack_hit")],
-            [InlineKeyboardButton("⏹️ пас", callback_data="blackjack_stand")]
+            [InlineKeyboardButton("удвоить", callback_data="blackjack_double")],
+            [InlineKeyboardButton("взять еще", callback_data="blackjack_hit")],
+            [InlineKeyboardButton("пас", callback_data="blackjack_stand")]
         ]
     else:
         inline_keyboard = [
-            [InlineKeyboardButton("🃏 играть еще", callback_data="blackjack_play_again")]
+            [InlineKeyboardButton("играть еще", callback_data="blackjack_play_again")]
         ]
 
     reply_markup = InlineKeyboardMarkup(inline_keyboard)
@@ -829,9 +830,9 @@ async def play_blackjack(update: Update, context: ContextTypes.DEFAULT_TYPE, bet
 баланс - <b>{format_money(new_balance)}</b>"""
 
     inline_keyboard = [
-        [InlineKeyboardButton("💰 удвоить", callback_data="blackjack_double")],
-        [InlineKeyboardButton("🃏 взять еще", callback_data="blackjack_hit")],
-        [InlineKeyboardButton("⏹️ пас", callback_data="blackjack_stand")]
+        [InlineKeyboardButton("удвоить", callback_data="blackjack_double")],
+        [InlineKeyboardButton("взять еще", callback_data="blackjack_hit")],
+        [InlineKeyboardButton("пас", callback_data="blackjack_stand")]
     ]
     reply_markup = InlineKeyboardMarkup(inline_keyboard)
 
@@ -944,7 +945,7 @@ async def handle_casino_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Список команд, которые можно выполнять во время ожидания ставки
     cancel_commands = ['отмена', 'cancel', 'back']
-    menu_commands = ['работа', 'назад', 'казино', 'магазин', 'дом', 'бизнес', 'донат', 'карта', 'помощь', 'статистика', 'основные', '⬅️ назад', '⚙️']
+    menu_commands = ['работа', 'работа ✅', 'назад', 'казино', 'казино ✅', 'магазин', 'дом', 'бизнес', 'донат', 'донат ✅', 'карта', 'помощь', 'помощь ✅', 'статистика', 'основные', '⬅️ назад', '⚙️', '🔄', '🔄 ✅']
     work_commands = ['начать чистку говна', 'начать доение', 'обновить время', 'отменить чистку', 'отменить доение']
     all_commands = cancel_commands + menu_commands + work_commands
 
@@ -954,11 +955,11 @@ async def handle_casino_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Обрабатываем команду
         if text in cancel_commands:
             await show_casino_menu(update, context)
-        elif text == 'работа':
+        elif text in ['работа', 'работа ✅']:
             await show_work_menu(update, context)
         elif text == 'назад':
             await show_main_menu(update, context)
-        elif text == 'казино':
+        elif text in ['казино', 'казино ✅']:
             await show_casino_menu(update, context)
         elif text == 'магазин':
             await update.message.reply_text("🛍️ магазин в разработке")
@@ -966,12 +967,12 @@ async def handle_casino_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("🏠 дом в разработке")
         elif text == 'бизнес':
             await update.message.reply_text("💼 бизнес в разработке")
-        elif text == 'донат':
+        elif text in ['донат', 'донат ✅']:
             from donations import show_donation_menu
             await show_donation_menu(update, context)
         elif text == 'карта':
             await update.message.reply_text("🗺️ карта в разработке")
-        elif text == 'помощь':
+        elif text in ['помощь', 'помощь ✅']:
             help_text = """🤖 <b>помощь по боту гангстер</b>
 
 <b>основные команды:</b>
@@ -979,28 +980,8 @@ async def handle_casino_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /me - открыть главное меню
 /help - показать эту справку
 
-<b>игровые команды:</b>
-"работа" - выбрать работу
-"казино" - играть в казино (в разработке)
-"магазин" - покупки (в разработке)
-"дом" - ваш дом (в разработке)
-"бизнес" - бизнес (в разработке)
-"донат" - поддержать бота (в разработке)
-"карта" - карта города (в разработке)
-"статистика" - ваша статистика
-
 <b>экономика:</b>
 /pay @username сумма - перевести деньги другому игроку
-"🔄" - обновить главное меню
-
-<b>доступные работы:</b>
-• 💩 говночист — лови лужи и собирай редкости
-• 🐄 дояр — дои коров, собирай бонусы
-
-<b>управление:</b>
-"назад" - вернуться назад
-"помощь" - показать справку
-"настройки" - изменить ник и цвет персонажа
 
 💡 <b>совет:</b> используй кнопки в меню для удобной навигации!"""
             await update.message.reply_text(help_text, parse_mode='HTML')

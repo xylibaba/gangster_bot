@@ -1,10 +1,18 @@
+import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 import os
 import random
 import datetime
+import time
 import sqlite3
 import asyncio
 import logging
-from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
+from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, InputMediaPhoto, InputFile
 from telegram.ext import ContextTypes
 from registration import get_user, get_user_stats
 from utils import format_money, safe_delete_message
@@ -108,11 +116,7 @@ def create_main_menu_text(nickname: str, money: int, user_id: int, username: str
     else:
         profile_link = f'<a href="tg://user?id={user_id}"><b>{display_nickname}</b></a>'
     
-    message_text = f"""{greeting}, {profile_link}
-
-сейчас ты находишься в <b>"город"</b>.
-
-на счету у тя <b>{formatted_money}</b>"""
+    message_text = f"""{greeting}, {profile_link}, находишься в <b>центре города</b>, на счету <b>{formatted_money}</b>"""
     
     return message_text
 
@@ -190,9 +194,9 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, unk
     
     # клавиатура главного меню
     keyboard = [
-        [KeyboardButton("работа"), KeyboardButton("казино"), KeyboardButton("магазин")],
-        [KeyboardButton("дом"), KeyboardButton("бизнес"), KeyboardButton("донат"), KeyboardButton("карта")],
-        [KeyboardButton("🔄"), KeyboardButton("помощь"), KeyboardButton("⚙️")]
+        [KeyboardButton("работа ✅"), KeyboardButton("казино ✅"), KeyboardButton("магазин")],
+        [KeyboardButton("дом"), KeyboardButton("бизнес"), KeyboardButton("донат ✅"), KeyboardButton("карта")],
+        [KeyboardButton("🔄 ✅"), KeyboardButton("🏆 топ"), KeyboardButton("помощь ✅"), KeyboardButton("⚙️")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
@@ -277,42 +281,55 @@ def create_profile_text(user_data, is_viewer_admin=False):
     return message_text
 
 # функция для создания админской клавиатуры - ИСПРАВЛЕННАЯ ВЕРСИЯ
-def create_admin_keyboard(target_user_id, target_user_data):
+def create_admin_keyboard(target_user_id, target_user_data, viewer_id=None):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from registration import is_main_admin
     
     # 🔒 БЕЗОПАСНЫЙ ДОСТУП К ДАННЫМ
     is_banned = target_user_data[9] if len(target_user_data) > 9 else False
     is_target_admin = target_user_data[6] if len(target_user_data) > 6 else False
     is_target_main_admin = target_user_data[7] if len(target_user_data) > 7 else False
+    is_viewer_main = is_main_admin(viewer_id) if viewer_id else False
     
     keyboard = []
     
     if not is_target_main_admin:
         # Кнопка поставить/снять админку
         if is_target_admin:
-            keyboard.append([InlineKeyboardButton("✅ снять", callback_data=f"admin_toggle_admin_{target_user_id}")])
+            keyboard.append([InlineKeyboardButton("снять админку", callback_data=f"admin_toggle_admin_{target_user_id}")])
         else:
-            keyboard.append([InlineKeyboardButton("✅ поставить", callback_data=f"admin_toggle_admin_{target_user_id}")])
+            keyboard.append([InlineKeyboardButton("поставить админку", callback_data=f"admin_toggle_admin_{target_user_id}")])
         
         # Кнопки забана/разбана
         if is_banned:
-            keyboard.append([InlineKeyboardButton("🚫 разбанить", callback_data=f"admin_unban_{target_user_id}")])
+            keyboard.append([InlineKeyboardButton("разбанить", callback_data=f"admin_unban_{target_user_id}")])
         else:
-            keyboard.append([InlineKeyboardButton("⛔ забанить", callback_data=f"admin_ban_{target_user_id}")])
+            keyboard.append([InlineKeyboardButton("забанить", callback_data=f"admin_ban_{target_user_id}")])
         
-        # Кнопка выдачи админ коинов (если админ)
-        if is_target_admin:
-            keyboard.append([InlineKeyboardButton("💎 выдать коины", callback_data=f"admin_give_coins_{target_user_id}")])
+        # Кнопка выдачи денег и Гангстер Плюс (ТОЛЬКО для главного админа)
+        if is_viewer_main:
+            is_target_plus = target_user_data[18] if len(target_user_data) > 18 else False
+            plus_btn_text = "💎 забрать плюс" if is_target_plus else "💎 выдать плюс"
+            keyboard.append([
+                InlineKeyboardButton(plus_btn_text, callback_data=f"admin_toggle_plus_{target_user_id}"),
+                InlineKeyboardButton("выдать деньги", callback_data=f"admin_give_money_{target_user_id}")
+            ])
         
         # Кнопки логов и аксессуаров
         keyboard.append([
-            InlineKeyboardButton("👕 аксессуары", callback_data=f"admin_view_accessories_{target_user_id}"),
-            InlineKeyboardButton("📋 логи", callback_data=f"admin_view_logs_{target_user_id}")
+            InlineKeyboardButton("аксессуары", callback_data=f"admin_view_accessories_{target_user_id}"),
+            InlineKeyboardButton("логи", callback_data=f"admin_view_logs_{target_user_id}")
         ])
     else:
-        # Для главного админа - только кнопка выдачи коинов и логов
-        keyboard.append([InlineKeyboardButton("💎 выдать коины", callback_data=f"admin_give_coins_{target_user_id}")])
-        keyboard.append([InlineKeyboardButton("📋 логи", callback_data=f"admin_view_logs_{target_user_id}")])
+        # Для главного админа
+        if is_viewer_main:
+            is_target_plus = target_user_data[18] if len(target_user_data) > 18 else False
+            plus_btn_text = "💎 забрать плюс" if is_target_plus else "💎 выдать плюс"
+            keyboard.append([
+                InlineKeyboardButton(plus_btn_text, callback_data=f"admin_toggle_plus_{target_user_id}"),
+                InlineKeyboardButton("выдать деньги", callback_data=f"admin_give_money_{target_user_id}")
+            ])
+        keyboard.append([InlineKeyboardButton("логи", callback_data=f"admin_view_logs_{target_user_id}")])
     
     return InlineKeyboardMarkup(keyboard)
 
@@ -375,10 +392,12 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                     photo_file = 'images/character_black.jpg' if cached_photo_exists('images/character_black.jpg') else 'images/registration.jpg'
             
             # Клавиатура для админа, смотрящего главного админа
-            keyboard = [
-                [InlineKeyboardButton("💎 выдать коины", callback_data=f"admin_give_coins_{user_id}"),
-                 InlineKeyboardButton("📋 логи", callback_data=f"admin_view_logs_{user_id}")]
-            ]
+            from registration import is_main_admin
+            viewer_id = update.effective_user.id if update.effective_user else 0
+            keyboard = []
+            if is_main_admin(viewer_id):
+                keyboard.append([InlineKeyboardButton("выдать деньги", callback_data=f"admin_give_money_{user_id}")])
+            keyboard.append([InlineKeyboardButton("логи", callback_data=f"admin_view_logs_{user_id}")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             
             if USE_PHOTOS:
@@ -412,10 +431,8 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     # создаем инлайн клавиатуру 
     reply_markup = None
     if is_admin_viewer:
-        # Клавиатура для админа, смотрящего профиль другого
-        viewer_id = context.user_data.get('viewer_id')  # Это должна быть переменная, которую нам нужно пока добавить
-        # На данный момент используем create_admin_keyboard для совместимости
-        reply_markup = create_admin_keyboard(user_id, user_data)
+        viewer_id = update.effective_user.id if update.effective_user else 0
+        reply_markup = create_admin_keyboard(user_id, user_data, viewer_id=viewer_id)
     
     # ОТОБРАЖАЕМ ПЕРСОНАЖА С АКСЕССУАРАМИ (с кэшированием)
     photo_file = None
@@ -546,9 +563,9 @@ async def show_work_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # инлайн клавиатура выбора работы - кнопки в двух рядах
     inline_keyboard = [
-        [InlineKeyboardButton("💩 говночист", callback_data="work_shit_cleaner"), 
-         InlineKeyboardButton("🐄 дояр", callback_data="work_milker")],
-        [InlineKeyboardButton("💻 скам", callback_data="work_scam")]
+        [InlineKeyboardButton("говночист", callback_data="work_shit_cleaner"), 
+         InlineKeyboardButton("дояр", callback_data="work_milker")],
+        [InlineKeyboardButton("скам", callback_data="work_scam")]
     ]
     inline_reply_markup = InlineKeyboardMarkup(inline_keyboard)
     
@@ -613,6 +630,7 @@ async def show_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # клавиатура настроек - reply кнопки
     keyboard = [
         [KeyboardButton("основные")],
+        [KeyboardButton("уведомления")],
         [KeyboardButton("⬅️ назад")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
@@ -683,11 +701,10 @@ async def show_main_settings(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user = get_user(user_id)
 
     if not user or not user[8]:
-        await update.message.reply_text("сначала нужно зарегистрироваться! напиши /start")
-        return
-
-    if not user or not user[8]:
-        await update.message.reply_text("сначала нужно зарегистрироваться! напиши /start")
+        if update.message:
+            await update.message.reply_text("сначала нужно зарегистрироваться! напиши /start")
+        elif update.callback_query:
+            await update.callback_query.message.reply_text("сначала нужно зарегистрироваться! напиши /start")
         return
 
     # 🔒 БЕЗОПАСНЫЙ ДОСТУП К ДАННЫМ
@@ -696,54 +713,24 @@ async def show_main_settings(update: Update, context: ContextTypes.DEFAULT_TYPE)
     gender = user[3] if len(user) > 3 else "male"
     color = user[4] if len(user) > 4 else "black"
 
-    gender_text = "👨" if gender == "male" else "👩"
-    color_text = "⚫ черный" if color == "black" else "⚪ белый"
-
-    # создаем кликабельную ссылку на профиль
-    if username:
-        profile_link = f'<a href="https://t.me/{username}"><b>{nickname}</b></a>'
-    else:
-        profile_link = f'<a href="tg://user?id={user_id}"><b>{nickname}</b></a>'
+    gender_text = "мужской" if gender == "male" else "женский"
+    color_text = "черный" if color == "black" else "белый"
 
     transfer_confirmation_text = "отключено" if (user[14] if len(user) > 14 else False) else "включено"
-    skin_name = get_user_skin_name(user_id)
-    equipped_names = get_user_equipped_names(user_id)
-    background_name = get_user_background_name(user_id)
-    
-    # Формируем текст о аксессуарах (в форме списка)
-    accessories_text = ""
-    if equipped_names['head'] or equipped_names['hand'] or equipped_names['body'] or equipped_names['feet']:
-        accessories_list = []
-        if equipped_names['head']:
-            accessories_list.append(f"голова: {equipped_names['head']}")
-        if equipped_names['hand']:
-            accessories_list.append(f"рука: {equipped_names['hand']}")
-        if equipped_names['body']:
-            accessories_list.append(f"тело: {equipped_names['body']}")
-        if equipped_names['feet']:
-            accessories_list.append(f"ноги: {equipped_names['feet']}")
-        accessories_text = "\n🎭 аксессуары:\n" + "\n".join(accessories_list)
-    else:
-        accessories_text = "\n🎭 аксессуары: нет"
 
-    message_text = f"""⚙️ <b>основные настройки</b>
+    # текст с параметрами
+    params_text = f"""пол — {gender_text}
+цвет кожи — {color_text}
+подтверждение переводов — {transfer_confirmation_text}"""
 
-{profile_link} {gender_text}
-цвет кожи: {color_text}
-👕 скин: {skin_name}
-🖼️ фон: {background_name}{accessories_text}
-💸 подтверждение переводов: {transfer_confirmation_text}
+    # выбираем эмодзи для кнопки пола и цвета кожи
+    gender_button_emoji = "🚹" if gender == "male" else "🚺"
+    color_button_emoji = "⚫" if color == "black" else "⚪"
 
-выбери что хочешь изменить:"""
-
-    # клавиатура основных настроек
+    # инлайн-клавиатура основных настроек (2x2 по кнопкам)
     keyboard = [
-        [InlineKeyboardButton("👨👩 сменить пол", callback_data="settings_change_gender")],
-        [InlineKeyboardButton("🎨 сменить цвет кожи", callback_data="settings_change_color")],
-        [InlineKeyboardButton("✏️ сменить ник", callback_data="settings_change_name")],
-        [InlineKeyboardButton("💸 подтверждение переводов", callback_data="settings_toggle_transfer_confirmation")],
-        [InlineKeyboardButton("🔔 уведомления", callback_data="settings_notifications")],
-        [InlineKeyboardButton("⬅️ назад", callback_data="settings_back")]
+        [InlineKeyboardButton(gender_button_emoji, callback_data="settings_change_gender"), InlineKeyboardButton(f"{color_button_emoji} цвет кожи", callback_data="settings_change_color")],
+        [InlineKeyboardButton("сменить ник", callback_data="settings_change_name"), InlineKeyboardButton("подтверждение переводов", callback_data="settings_toggle_transfer_confirmation")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -751,44 +738,80 @@ async def show_main_settings(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['in_main_settings'] = True
 
     # СОЗДАЕМ КАРТИНКУ ПЕРСОНАЖА С АКСЕССУАРАМИ
+    temp_filename = f'temp/temp_settings_{user_id}.png'
     photo_file = 'images/character_black.jpg'
+    if color == "white" and cached_photo_exists('images/character_white.jpg'):
+        photo_file = 'images/character_white.jpg'
+
     try:
-        custom_photo = create_character_with_accessories(user_id, output_file='temp/temp_settings.png')
-        if custom_photo:
+        custom_photo = create_character_with_accessories(user_id, output_file=temp_filename)
+        if custom_photo and os.path.exists(custom_photo):
             photo_file = custom_photo
     except Exception as e:
-        pass  # тихо используем дефолтную картинку
+        logger.error(f"Ошибка при создании картинки для настроек: {e}")
 
-    # отправляем фото с текстом основных настроек
-    message = None
-    if USE_PHOTOS and os.path.exists(photo_file):
+    back_reply_keyboard = ReplyKeyboardMarkup([[KeyboardButton("⬅️ назад")]], resize_keyboard=True)
+
+    # ЕСЛИ ЭТО ВЫЗОВ ИЗ CALLBACK (нажата инлайн кнопка в настройках)
+    if update.callback_query:
         try:
-            message = await context.bot.send_photo(
-                chat_id=user_id,
-                photo=open(photo_file, 'rb'),
-                caption=message_text,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-        except Exception:
-            message = await context.bot.send_message(
-                chat_id=user_id,
-                text=message_text,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
+            if USE_PHOTOS and os.path.exists(photo_file):
+                with open(photo_file, 'rb') as photo:
+                    message = await update.callback_query.edit_message_media(
+                        media=InputMediaPhoto(
+                            media=photo,
+                            caption=params_text,
+                            parse_mode='HTML'
+                        ),
+                        reply_markup=reply_markup
+                    )
+                    if message:
+                        context.user_data['main_settings_message_id'] = message.message_id
+                        context.user_data['main_settings_chat_id'] = message.chat_id
+            else:
+                message = await update.callback_query.edit_message_text(
+                    text=params_text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+                if message:
+                    context.user_data['main_settings_message_id'] = message.message_id
+                    context.user_data['main_settings_chat_id'] = message.chat_id
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении сообщения основных настроек: {e}")
     else:
-        message = await context.bot.send_message(
+        # ПЕРВЫЙ ВЫЗОВ ИЗ МЕНЮ - отправляем реплай-кнопку "⬅️ назад" и фото с текстом
+        await context.bot.send_message(
             chat_id=user_id,
-            text=message_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
+            text="⚙️",
+            reply_markup=back_reply_keyboard
         )
 
-    # сохраняем id сообщения основных настроек для инвалидации кнопок
-    if message:
-        context.user_data['main_settings_message_id'] = message.message_id
-        context.user_data['main_settings_chat_id'] = message.chat_id
+        if USE_PHOTOS and os.path.exists(photo_file):
+            try:
+                with open(photo_file, 'rb') as photo:
+                    message = await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=photo,
+                        caption=params_text,
+                        reply_markup=reply_markup,
+                        parse_mode='HTML'
+                    )
+                    if message:
+                        context.user_data['main_settings_message_id'] = message.message_id
+                        context.user_data['main_settings_chat_id'] = message.chat_id
+            except Exception as e:
+                logger.error(f"Ошибка при отправке фото основных настроек: {e}")
+        else:
+            message = await context.bot.send_message(
+                chat_id=user_id,
+                text=params_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+            if message:
+                context.user_data['main_settings_message_id'] = message.message_id
+                context.user_data['main_settings_chat_id'] = message.chat_id
 
 # меню настроек уведомлений
 async def show_notifications_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -796,7 +819,10 @@ async def show_notifications_settings(update: Update, context: ContextTypes.DEFA
     user = get_user(user_id)
 
     if not user or not user[8]:
-        await update.callback_query.message.reply_text("сначала нужно зарегистрироваться! напиши /start")
+        if update.message:
+            await update.message.reply_text("сначала нужно зарегистрироваться! напиши /start")
+        elif update.callback_query:
+            await update.callback_query.message.reply_text("сначала нужно зарегистрироваться! напиши /start")
         return
 
     # 🔒 БЕЗОПАСНЫЙ ДОСТУП К ДАННЫМ
@@ -808,53 +834,86 @@ async def show_notifications_settings(update: Update, context: ContextTypes.DEFA
     news_notifications_text = "отключены" if disable_news_notifications else "включены"
     system_notifications_text = "отключены" if disable_system_notifications else "включены"
 
+    transfer_emoji = "🔴" if disable_transfer_notifications else "🟢"
+    news_emoji = "🔴" if disable_news_notifications else "🟢"
+    system_emoji = "🔴" if disable_system_notifications else "🟢"
+
     message_text = f"""🔔 <b>настройки уведомлений</b>
 
 💰 уведомления о получении денег: {transfer_notifications_text}
 📢 новостная рассылка: {news_notifications_text}
-⚙️ системные уведомления: {system_notifications_text}
+⚙️ системные уведомления: включены (обязательно)
 
 выбери какие уведомления хочешь включить/отключить:"""
 
     # клавиатура настроек уведомлений
     keyboard = [
-        [InlineKeyboardButton("💰 переводы", callback_data="notifications_toggle_transfer")],
-        [InlineKeyboardButton("📢 новости", callback_data="notifications_toggle_news")],
-        [InlineKeyboardButton("⚙️ системные", callback_data="notifications_toggle_system")],
-        [InlineKeyboardButton("⬅️ назад", callback_data="settings_back")]
+        [InlineKeyboardButton(f"💰 переводы {transfer_emoji}", callback_data="notifications_toggle_transfer")],
+        [InlineKeyboardButton(f"📢 новости {news_emoji}", callback_data="notifications_toggle_news")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     # сохраняем состояние - пользователь в настройках уведомлений
     context.user_data['in_notifications_settings'] = True
+    back_reply_keyboard = ReplyKeyboardMarkup([[KeyboardButton("⬅️ назад")]], resize_keyboard=True)
 
-    # отправляем фото с текстом настроек уведомлений
-    notifications_photo = 'images/notifications_settings.jpg'
-    if USE_PHOTOS and cached_photo_exists(notifications_photo):
+    # ЕСЛИ ЭТО ВЫЗОВ ИЗ CALLBACK (нажатие инлайн кнопки) - РЕДАКТИРУЕМ СООБЩЕНИЕ НА МЕСТЕ
+    if update.callback_query:
         try:
-            message = await update.callback_query.message.reply_photo(
-                photo=open(notifications_photo, 'rb'),
-                caption=message_text,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
-        except Exception:
-            message = await update.callback_query.message.reply_text(
-                message_text,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
+            try:
+                message = await update.callback_query.edit_message_caption(
+                    caption=message_text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+            except Exception:
+                message = await update.callback_query.edit_message_text(
+                    text=message_text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+            if message:
+                context.user_data['notifications_settings_message_id'] = message.message_id
+                context.user_data['notifications_settings_chat_id'] = message.chat_id
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении настроек уведомлений: {e}")
     else:
-        message = await update.callback_query.message.reply_text(
-            message_text,
-            reply_markup=reply_markup,
-            parse_mode='HTML'
+        # ПЕРВЫЙ ВЫЗОВ ИЗ МЕНЮ - отправляем реплай-кнопку "⬅️ назад" и сообщение настроек
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="🔔",
+            reply_markup=back_reply_keyboard
         )
 
-    # сохраняем id сообщения настроек уведомлений для инвалидации
-    if message:
-        context.user_data['notifications_settings_message_id'] = message.message_id
-        context.user_data['notifications_settings_chat_id'] = message.chat_id
+        notifications_photo = 'images/notifications_settings.jpg'
+        if USE_PHOTOS and cached_photo_exists(notifications_photo):
+            try:
+                with open(notifications_photo, 'rb') as photo:
+                    message = await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=photo,
+                        caption=message_text,
+                        reply_markup=reply_markup,
+                        parse_mode='HTML'
+                    )
+            except Exception:
+                message = await context.bot.send_message(
+                    chat_id=user_id,
+                    text=message_text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+        else:
+            message = await context.bot.send_message(
+                chat_id=user_id,
+                text=message_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+
+        if message:
+            context.user_data['notifications_settings_message_id'] = message.message_id
+            context.user_data['notifications_settings_chat_id'] = message.chat_id
 
 # функция для выбора нового цвета
 async def show_color_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -892,15 +951,14 @@ async def show_color_selection(update: Update, context: ContextTypes.DEFAULT_TYP
         )
     except Exception:
         try:
-            await update.callback_query.message.reply_text(
-                message_text,
+            await update.callback_query.edit_message_text(
+                text=message_text,
                 reply_markup=reply_markup,
                 parse_mode='HTML'
             )
         except Exception:
-            await update.callback_query.bot.send_message(
-                chat_id=update.callback_query.from_user.id,
-                text=message_text,
+            await update.callback_query.message.reply_text(
+                message_text,
                 reply_markup=reply_markup,
                 parse_mode='HTML'
             )
@@ -927,8 +985,8 @@ async def show_gender_selection(update: Update, context: ContextTypes.DEFAULT_TY
     message_text = f"""{profile_link}, выбери новый пол для своего персонажа:"""
 
     keyboard = [
-        [InlineKeyboardButton("👨 парень", callback_data="settings_gender_male")],
-        [InlineKeyboardButton("👩 девушка", callback_data="settings_gender_female")],
+        [InlineKeyboardButton("🚹", callback_data="settings_gender_male")],
+        [InlineKeyboardButton("🚺", callback_data="settings_gender_female")],
         [InlineKeyboardButton("⬅️ назад", callback_data="settings_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -941,15 +999,117 @@ async def show_gender_selection(update: Update, context: ContextTypes.DEFAULT_TY
         )
     except Exception:
         try:
+            await update.callback_query.edit_message_text(
+                text=message_text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+        except Exception:
             await update.callback_query.message.reply_text(
                 message_text,
                 reply_markup=reply_markup,
                 parse_mode='HTML'
             )
-        except Exception:
-            await update.callback_query.bot.send_message(
-                chat_id=update.callback_query.from_user.id,
-                text=message_text,
-                reply_markup=reply_markup,
-                parse_mode='HTML'
-            )
+
+# кэш для топа богатейших пользователей (timestamp, text)
+top_balance_cache = {
+    'timestamp': 0,
+    'text': ''
+}
+
+def get_top_balance_text():
+    """Получает отформатированный текст топа 5 богатейших пользователей с 5-минутным кэшированием"""
+    current_time = time.time()
+    
+    # Возвращаем кэш, если прошло меньше 5 минут (300 секунд)
+    if top_balance_cache['text'] and (current_time - top_balance_cache['timestamp'] < 300):
+        return top_balance_cache['text']
+        
+    try:
+        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        
+        # Получаем топ 5 не забаненных пользователей по балансу (исключая главного админа)
+        cursor.execute('''
+            SELECT user_id, username, name, money, is_gangster_plus
+            FROM users
+            WHERE (is_main_admin = FALSE OR is_main_admin IS NULL)
+              AND (banned = FALSE OR banned IS NULL)
+            ORDER BY money DESC
+            LIMIT 5
+        ''')
+        top_users = cursor.fetchall()
+        conn.close()
+        
+        if not top_users:
+            text = "🏆 <b>топ 5 богатейших игроков</b>\n\nсписок пока пуст!"
+        else:
+            medals = ["🥇", "🥈", "🥉", "👤", "👤"]
+            lines = ["🏆 <b>топ 5 богатейших игроков:</b>\n"]
+            
+            for idx, user_data in enumerate(top_users):
+                u_id, username, nickname, money, is_plus = user_data
+                medal = medals[idx] if idx < len(medals) else "👤"
+                
+                disp_nick = f"{nickname} 💎" if is_plus else nickname
+                if username:
+                    profile_link = f'<a href="https://t.me/{username}"><b>{disp_nick}</b></a>'
+                else:
+                    profile_link = f'<a href="tg://user?id={u_id}"><b>{disp_nick}</b></a>'
+                    
+                formatted_money = format_money(money)
+                lines.append(f"{idx + 1}. {medal} {profile_link} — <b>{formatted_money}</b>")
+                
+            lines.append("\n<i>🕒 топ обновляется каждые 5 минут</i>")
+            text = "\n".join(lines)
+            
+        top_balance_cache['text'] = text
+        top_balance_cache['timestamp'] = current_time
+        return text
+    except Exception as e:
+        logger.error(f"Ошибка при получении топа по балансу: {e}")
+        return "❌ не удалось загрузить топ по балансу!"
+
+async def show_top_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает топ 5 богатейших пользователей"""
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+
+    if not user or not user[8]:
+        if update.message:
+            await update.message.reply_text("сначала нужно зарегистрироваться! напиши /start")
+        elif update.callback_query:
+            await update.callback_query.message.reply_text("сначала нужно зарегистрироваться! напиши /start")
+        return
+
+    text = get_top_balance_text()
+    
+    keyboard = [
+        [InlineKeyboardButton("🔄 обновить", callback_data="refresh_top_balance")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if update.callback_query:
+        try:
+            try:
+                await update.callback_query.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode='HTML')
+            except Exception:
+                await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='HTML')
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении топа: {e}")
+    else:
+        photo_file = 'images/registration.jpg'
+        if USE_PHOTOS and cached_photo_exists(photo_file):
+            try:
+                with open(photo_file, 'rb') as photo:
+                    await context.bot.send_photo(
+                        chat_id=user_id,
+                        photo=photo,
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode='HTML'
+                    )
+            except Exception:
+                await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')

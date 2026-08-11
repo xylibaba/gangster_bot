@@ -1,3 +1,10 @@
+import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 import logging
 import os
 import sqlite3
@@ -64,34 +71,10 @@ DEFAULT_ACCESSORIES = [
 # Встроенные фоны
 DEFAULT_BACKGROUNDS = [
     {
-        "name": "дом",
-        "description": "красивый дом со скатной крышей",
-        "price": 200000,
-        "image_file": "images/background_home.jpg"
-    },
-    {
-        "name": "офис",
-        "description": "современный офис",
-        "price": 150000,
-        "image_file": "images/background_office.jpg"
-    },
-    {
-        "name": "казино",
-        "description": "люксовое казино",
-        "price": 250000,
-        "image_file": "images/background_casino.jpg"
-    },
-    {
-        "name": "пляж",
-        "description": "экзотический пляж",
-        "price": 180000,
-        "image_file": "images/background_beach.jpg"
-    },
-    {
-        "name": "улица",
-        "description": "модная городская улица",
-        "price": 120000,
-        "image_file": "images/background_street.jpg"
+        "name": "Лос-Сантос",
+        "description": "солнечный город Лос-Сантос",
+        "price": 100000,
+        "image_file": "images/1_background.jpg"
     }
 ]
 
@@ -120,6 +103,9 @@ def init_accessories_and_backgrounds():
                     VALUES (?, ?, ?, ?, ?, TRUE)
                 ''', (acc['name'], acc['type'], acc['description'], acc['price'], acc['image_file']))
         
+        # Удаляем устаревшие фоны
+        cursor.execute("DELETE FROM backgrounds WHERE image_file NOT IN ('images/1_background.jpg', 'images/default_background.jpg')")
+
         # Добавляем стандартные фоны (проверяем что их еще нет)
         for bg in DEFAULT_BACKGROUNDS:
             cursor.execute('SELECT background_id FROM backgrounds WHERE name = ?', (bg['name'],))
@@ -984,14 +970,9 @@ async def show_shop_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_user_admin = is_admin(user_id)
     
     keyboard = [
-        [KeyboardButton("👕 магазин аксессуаров"), KeyboardButton("🎨 магазин фонов")]
+        [KeyboardButton("👕 магазин аксессуаров"), KeyboardButton("🎨 магазин фонов")],
+        [KeyboardButton("назад")]
     ]
-    
-    # Добавляем адміс магазин для администраторов
-    if is_user_admin:
-        keyboard.append([KeyboardButton("💎 админ магазин")])
-    
-    keyboard.append([KeyboardButton("назад")])
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
     
     text = f"""🛍️ <b>магазин</b>
@@ -999,12 +980,9 @@ async def show_shop_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
 баланс: <b>{format_money(money)}</b>
 
 <b>👕 аксессуары:</b> украшения для персонажа
-<b>🎨 фоны:</b> интерьеры для главного меню"""
-    
-    if is_user_admin:
-        text += "\n<b>💎 админ магазин:</b> обмен коинов и товары для админов"
-    
-    text += "\n\nчто выбираешь?"
+<b>🎨 фоны:</b> интерьеры для главного меню
+
+что выбираешь?"""
     
     try:
         if update.callback_query:
@@ -1207,6 +1185,19 @@ async def _show_background_carousel(update: Update, context: ContextTypes.DEFAUL
     money = user[5]
     backgrounds = get_all_backgrounds()
     
+    # Отправляем сообщения с reply кнопкой "назад" и заголовком при первом входе
+    if not update.callback_query:
+        try:
+            back_keyboard = [[KeyboardButton("назад")]]
+            back_reply_markup = ReplyKeyboardMarkup(back_keyboard, resize_keyboard=True, one_time_keyboard=False)
+            await update.message.reply_text(
+                "🎨 <b>магазин фонов</b>\n\nвыбери фон:",
+                reply_markup=back_reply_markup,
+                parse_mode='html'
+            )
+        except Exception:
+            pass
+    
     if not backgrounds:
         text = "❌ фонов не найдено"
         keyboard = [[InlineKeyboardButton("назад", callback_data="shop_menu")]]
@@ -1257,14 +1248,17 @@ async def _show_background_carousel(update: Update, context: ContextTypes.DEFAUL
             # Если не куплен - показываем купить
             middle_button = InlineKeyboardButton("купить", callback_data=f"shop_bg_buy_{bg_id}")
         
+        # Определяем callback_data для стрелок
+        arrow_callback = "shop_bg_disabled" if len(backgrounds) <= 1 else "shop_bg_prev"
+        arrow_next_callback = "shop_bg_disabled" if len(backgrounds) <= 1 else "shop_bg_next"
+        
         # Кнопки навигации
         keyboard = [
             [
-                InlineKeyboardButton("⬅️", callback_data="shop_bg_prev"),
+                InlineKeyboardButton("⬅️", callback_data=arrow_callback),
                 middle_button,
-                InlineKeyboardButton("➡️", callback_data="shop_bg_next")
-            ],
-            [InlineKeyboardButton("назад", callback_data="shop_menu")]
+                InlineKeyboardButton("➡️", callback_data=arrow_next_callback)
+            ]
         ]
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1278,31 +1272,34 @@ async def _show_background_carousel(update: Update, context: ContextTypes.DEFAUL
     # Обновляем сообщение или отправляем новое
     try:
         if update.callback_query:
-            # Если есть callback_query - пытаемся отредактировать
-            try:
-                # Сначала убираем кнопки старого сообщения
-                await update.callback_query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([]))
-            except:
-                pass
+            photo_file = preview_file if (preview_file and os.path.exists(preview_file)) else (backgrounds[current_index][4] if backgrounds else None)
+            edited = False
+            if photo_file and os.path.exists(photo_file):
+                try:
+                    with open(photo_file, 'rb') as photo:
+                        await update.callback_query.edit_message_media(
+                            media=InputMediaPhoto(
+                                media=photo,
+                                caption=text,
+                                parse_mode='html'
+                            ),
+                            reply_markup=reply_markup
+                        )
+                        edited = True
+                except Exception as e:
+                    if "message is not modified" not in str(e).lower():
+                        logger.warning(f"Не удалось отредактировать медиа фонов: {e}")
             
-            # Отправляем новое сообщение с фотографией
-            try:
-                photo_file = preview_file if preview_file else backgrounds[current_index][4]
-                with open(photo_file, 'rb') as photo:
-                    await context.bot.send_photo(
-                        chat_id=update.effective_chat.id,
-                        photo=photo,
+            if not edited:
+                try:
+                    await update.callback_query.edit_message_caption(
                         caption=text,
                         reply_markup=reply_markup,
                         parse_mode='html'
                     )
-            except:
-                await context.bot.send_message(
-                    chat_id=update.effective_chat.id,
-                    text=text,
-                    reply_markup=reply_markup,
-                    parse_mode='html'
-                )
+                except Exception as e:
+                    if "message is not modified" not in str(e).lower():
+                        logger.warning(f"Не удалось отредактировать подпись фонов: {e}")
         else:
             try:
                 photo_file = preview_file if preview_file else backgrounds[current_index][4]
@@ -1401,48 +1398,9 @@ async def show_accessories_shop(update: Update, context: ContextTypes.DEFAULT_TY
         pass
 
 async def show_backgrounds_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает магазин фонов (категорийный выбор)"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    if not user:
-        await update.callback_query.answer("❌ пользователь не найден", show_alert=True)
-        return
-    
-    money = user[5]
-    backgrounds = get_all_backgrounds()
-    
-    if not backgrounds:
-        text = "❌ нет доступных фонов"
-        keyboard = [[InlineKeyboardButton("назад", callback_data="wardrobe_menu")]]
-    else:
-        # Создаем кнопки для каждого фона
-        keyboard = []
-        for i, bg in enumerate(backgrounds):
-            bg_name = bg[1]  # name
-            bg_price = bg[3]  # price
-            has_bg = has_background(user_id, bg[0])  # background_id
-            
-            if has_bg:
-                button_text = f"✅ {bg_name}"
-            else:
-                button_text = f"💰 {bg_name} ({format_money(bg_price)})"
-            
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"bg_view_{bg[0]}")])
-        
-        keyboard.append([InlineKeyboardButton("назад", callback_data="wardrobe_menu")])
-        
-        text = f"🎨 <b>магазин фонов</b>\n\nбаланс: {format_money(money)}\n\nвыбери фон:"
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    try:
-        if update.callback_query:
-            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='html')
-        else:
-            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='html')
-    except Exception:
-        pass
+    """Показывает магазин фонов в карусели"""
+    context.user_data['current_background_index'] = 0
+    await _show_background_carousel(update, context)
 
 # ==========================================
 # 🛒 ОБРАБОТЧИКИ CALLBACK'ОВ МАГАЗИНА
@@ -1454,11 +1412,9 @@ async def handle_shop_accessories_start(update: Update, context: ContextTypes.DE
     await _show_accessory_carousel(update, context)
 
 async def handle_shop_backgrounds_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает сообщение о недоступности фонов"""
-    query = update.callback_query
-    await query.answer("😔 фоны временно недоступны", show_alert=True)
-    # Возвращаемся в меню магазина
-    await show_shop_main(update, context)
+    """Начинает показ карусели фонов"""
+    context.user_data['current_background_index'] = 0
+    await _show_background_carousel(update, context)
 
 async def handle_shop_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Возвращает в главное меню магазина"""
@@ -1486,6 +1442,10 @@ async def handle_shop_acc_nav(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_shop_bg_nav(update: Update, context: ContextTypes.DEFAULT_TYPE, direction: str):
     """Навигация по фонам"""
     backgrounds = get_all_backgrounds()
+    if len(backgrounds) <= 1:
+        await update.callback_query.answer()
+        return
+        
     current_index = context.user_data.get('current_background_index', 0)
     
     if direction == "next":
@@ -1582,6 +1542,398 @@ async def handle_shop_toggle_background(update: Update, context: ContextTypes.DE
         cursor = conn.cursor()
         
         if equipped:
+            # Убираем фон (устанавливаем NULL)
+            cursor.execute('SELECT 1 FROM user_equipped WHERE user_id = ?', (user_id,))
+            if cursor.fetchone():
+                cursor.execute('UPDATE user_equipped SET background_accessory = NULL WHERE user_id = ?', (user_id,))
+            else:
+                cursor.execute('INSERT INTO user_equipped (user_id, background_accessory) VALUES (?, NULL)', (user_id,))
+            message = "✅ фон убран"
+        else:
+            # Применяем фон
+            cursor.execute('SELECT 1 FROM user_equipped WHERE user_id = ?', (user_id,))
+            if cursor.fetchone():
+                cursor.execute('UPDATE user_equipped SET background_accessory = ? WHERE user_id = ?', (background_id, user_id))
+            else:
+                cursor.execute('INSERT INTO user_equipped (user_id, background_accessory) VALUES (?, ?)', (user_id, background_id))
+            message = "✅ фон применен"
+        
+        conn.commit()
+        conn.close()
+        
+        # Очищаем кэш персонажа
+        clear_character_cache(user_id)
+        
+        await query.answer(message, show_alert=True)
+        # Обновляем карусель
+        await _show_background_carousel(update, context)
+    except Exception as e:
+        logger.error(f"Ошибка при переключении фона: {e}")
+        await query.answer("❌ произошла ошибка!", show_alert=True)
+
+async def _show_accessories_by_type(update: Update, context: ContextTypes.DEFAULT_TYPE, acc_type: str):
+    """Показывает список аксессуаров определенного типа как меню с кнопками"""
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    
+    if not user:
+        return
+    
+    money = user[5]
+    accessories = get_accessories_by_type(acc_type)
+    
+    type_names = {
+        'head': '👒 на голову',
+        'hand': '🖐️ на руки',
+        'body': '📿 на тело',
+        'feet': '👟 на ноги'
+    }
+    type_name = type_names.get(acc_type, acc_type)
+    
+    if not accessories:
+        text = f"❌ {type_name} — аксессуаров не найдено"
+        keyboard = [[InlineKeyboardButton("назад", callback_data="wardrobe_accessories")]]
+    else:
+        # Создаем кнопки для каждого аксессуара
+        keyboard = []
+        for acc in accessories:
+            acc_id = acc[0]
+            acc_name = acc[1]
+            acc_price = acc[4]
+            
+            owned = has_accessory(user_id, acc_id)
+            
+            if owned:
+                button_text = f"✅ {acc_name}"
+            else:
+                button_text = f"💰 {acc_name} ({format_money(acc_price)})"
+            
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"acc_view_{acc_id}")])
+        
+        keyboard.append([InlineKeyboardButton("назад", callback_data="wardrobe_accessories")])
+        
+        text = f"<b>{type_name}</b>\n\nбаланс: {format_money(money)}\n\nвыбери аксессуар:"
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='html')
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='html')
+    except Exception as e:
+        logger.error(f"Ошибка при показе аксессуаров типа: {e}")
+
+async def handle_acc_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик выбора типа аксессуара"""
+    query = update.callback_query
+    data = query.data
+    
+    # Извлекаем тип аксессуара из callback_data
+    acc_type = data.replace("acc_type_", "")
+    
+    await _show_accessories_by_type(update, context, acc_type)
+
+async def handle_acc_view_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает детали аксессуара и позволяет купить/одеть/снять"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    accessory_id = int(query.data.replace("acc_view_", ""))
+    
+    user = get_user(user_id)
+    if not user:
+        await query.answer("❌ пользователь не найден", show_alert=True)
+        return
+    
+    money = user[5]
+    
+    # Получаем информацию об аксессуаре
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM accessories WHERE accessory_id = ?', (accessory_id,))
+    acc = cursor.fetchone()
+    conn.close()
+    
+    if not acc:
+        await query.answer("❌ аксессуар не найден", show_alert=True)
+        return
+    
+    acc_id = acc[0]
+    acc_name = acc[1]
+    acc_type = acc[2]
+    acc_desc = acc[3]
+    acc_price = acc[4]
+    acc_image = acc[5]
+    
+    owned = has_accessory(user_id, acc_id)
+    equipped = is_accessory_equipped(user_id, acc_id) if owned else False
+    
+    type_emoji = {
+        'head': '👒',
+        'hand': '🖐️',
+        'body': '📿',
+        'feet': '👟'
+    }.get(acc_type, '📦')
+    
+    # Текст карточки
+    if owned:
+        status = "надет ✅" if equipped else "куплен, не надет"
+        text = (
+            f"<b>{type_emoji} {acc_name}</b>\n"
+            f"<i>{acc_desc}</i>\n\n"
+            f"💰 цена: {format_money(acc_price)}\n"
+            f"<b>{status}</b>"
+        )
+    else:
+        text = (
+            f"<b>{type_emoji} {acc_name}</b>\n"
+            f"<i>{acc_desc}</i>\n\n"
+            f"💰 цена: <b>{format_money(acc_price)}</b>\n"
+            f"баланс: {format_money(money)}"
+        )
+    
+    # Кнопки
+    if owned:
+        # Если куплен - может надеть/снять
+        toggle_text = "снять" if equipped else "надеть"
+        keyboard = [
+            [InlineKeyboardButton(toggle_text, callback_data=f"acc_equip_{acc_id}")],
+            [InlineKeyboardButton("назад к типам", callback_data=f"acc_type_{acc_type}")]
+        ]
+    else:
+        # Если не куплен - может купить
+        keyboard = [
+            [InlineKeyboardButton("купить", callback_data=f"acc_buy_{acc_id}")],
+            [InlineKeyboardButton("назад к типам", callback_data=f"acc_type_{acc_type}")]
+        ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Создаем превью аксессуара с фоном
+    preview_file = None
+    if owned and not equipped:
+        # Если куплен но не одет - показываем персонажа со всеми одетыми аксессуарами (кроме этого)
+        preview_file = create_character_with_accessories(user_id, output_file='temp/temp_acc_preview_no_current.png')
+    else:
+        # Если не куплен или одет - показываем с этим аксессуаром
+        preview_file = create_accessory_preview_with_background(user_id, acc_id)
+    
+    # Отправляем/обновляем сообщение
+    try:
+        if preview_file and os.path.exists(preview_file):
+            with open(preview_file, 'rb') as photo:
+                await query.edit_message_media(
+                    media=InputMediaPhoto(
+                        media=photo,
+                        caption=text,
+                        parse_mode='html'
+                    ),
+                    reply_markup=reply_markup
+                )
+        else:
+            await query.edit_message_caption(
+                caption=text,
+                reply_markup=reply_markup,
+                parse_mode='html'
+            )
+    except Exception as e:
+        logger.error(f"Ошибка при показе детали аксессуара: {e}")
+
+async def handle_acc_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Покупает аксессуар"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    accessory_id = int(query.data.replace("acc_buy_", ""))
+    
+    success, message = buy_accessory(user_id, accessory_id)
+    
+    if success:
+        await query.answer(message, show_alert=True)
+        # Обновляем показ аксессуара (он теперь куплен)
+        await handle_acc_view_details(update, context)
+    else:
+        await query.answer(message, show_alert=True)
+
+async def handle_acc_equip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Надевает/снимает аксессуар (ТОЛЬКО если куплен)"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    accessory_id = int(query.data.replace("acc_equip_", ""))
+    
+    # Проверяем, компил ли пользователь этот аксессуар
+    if not has_accessory(user_id, accessory_id):
+        await query.answer("❌ ты не купил этот аксессуар!", show_alert=True)
+        return
+    
+    # Проверяем, надет ли аксессуар
+    equipped = is_accessory_equipped(user_id, accessory_id)
+    
+    try:
+        # Получаем тип аксессуара
+        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('SELECT type FROM accessories WHERE accessory_id = ?', (accessory_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if not result:
+            await query.answer("❌ аксессуар не найден!", show_alert=True)
+            return
+        
+        acc_type = result[0]
+        
+        if equipped:
+            # Снимаем аксессуар
+            unequip_accessory(user_id, acc_type)
+            message = "✅ аксессуар снят"
+        else:
+            # Надеваем аксессуар
+            equip_accessory(user_id, accessory_id)
+            message = "✅ аксессуар надет"
+        
+        # Очищаем кэш персонажа
+        clear_character_cache(user_id)
+        
+        await query.answer(message, show_alert=True)
+        # Обновляем показ аксессуара
+        await handle_acc_view_details(update, context)
+    except Exception as e:
+        logger.error(f"Ошибка при переключении аксессуара: {e}")
+        await query.answer("❌ произошла ошибка!", show_alert=True)
+
+async def handle_bg_view_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик просмотра фона"""
+    query = update.callback_query
+    data = query.data
+    
+    # Извлекаем ID фона
+    background_id = int(data.replace("bg_view_", ""))
+    
+    user_id = query.from_user.id
+    user = get_user(user_id)
+    
+    if not user:
+        await query.answer("❌ пользователь не найден", show_alert=True)
+        return
+    
+    money = user[5]
+    
+    # Получаем информацию о фоне
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM backgrounds WHERE background_id = ?', (background_id,))
+    bg = cursor.fetchone()
+    conn.close()
+    
+    if not bg:
+        await query.answer("❌ фон не найден", show_alert=True)
+        return
+    
+    bg_id = bg[0]
+    bg_name = bg[1]
+    bg_desc = bg[2]
+    bg_price = bg[3]
+    
+    # Проверяем, купил ли пользователь фон
+    owned = has_background(user_id, bg_id)
+    equipped = is_background_equipped(user_id, bg_id) if owned else False
+    
+    # Текст карточки
+    if owned:
+        status = "применен ✅" if equipped else "куплен, не применен"
+        text = (
+            f"<b>🎨 {bg_name}</b>\n"
+            f"<i>{bg_desc}</i>\n\n"
+            f"💰 цена: {format_money(bg_price)}\n"
+            f"<b>{status}</b>"
+        )
+    else:
+        text = (
+            f"<b>🎨 {bg_name}</b>\n"
+            f"<i>{bg_desc}</i>\n\n"
+            f"💰 цена: <b>{format_money(bg_price)}</b>\n"
+            f"баланс: {format_money(money)}"
+        )
+    
+    # Кнопка в зависимости от статуса
+    if owned:
+        # Если куплен - показываем убрать/применить
+        middle_button = InlineKeyboardButton(
+            "убрать" if equipped else "применить", 
+            callback_data=f"bg_toggle_{bg_id}"
+        )
+    else:
+        # Если не куплен - показываем купить
+        middle_button = InlineKeyboardButton("купить", callback_data=f"bg_buy_{bg_id}")
+    
+    # Кнопки навигации
+    keyboard = [
+        [middle_button],
+        [InlineKeyboardButton("назад", callback_data="wardrobe_backgrounds")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Создаем превью фона с персонажем и аксессуарами
+    preview_file = create_background_preview(user_id, bg_id)
+    
+    # Обновляем сообщение или отправляем новое
+    try:
+        if update.callback_query:
+            try:
+                photo_file = preview_file if preview_file and os.path.exists(preview_file) else bg[4]
+                
+                if photo_file and os.path.exists(photo_file):
+                    with open(photo_file, 'rb') as photo:
+                        await update.callback_query.edit_message_media(
+                            media=InputMediaPhoto(
+                                media=photo,
+                                caption=text,
+                                parse_mode='html'
+                            ),
+                            reply_markup=reply_markup
+                        )
+            except Exception as e:
+                try:
+                    await update.callback_query.edit_message_caption(
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode='html'
+                    )
+                except:
+                    logger.error(f"Ошибка при редактировании сообщения: {e}")
+    except Exception as e:
+        logger.error(f"Ошибка при показе превью фона: {e}")
+
+async def handle_bg_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Покупает фон из меню просмотра"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    background_id = int(query.data.replace("bg_buy_", ""))
+    
+    success, message = buy_background(user_id, background_id)
+    
+    if success:
+        await query.answer(message, show_alert=True)
+        # Обновляем карусель
+        await handle_bg_view_selection(update, context)
+    else:
+        await query.answer(message, show_alert=True)
+
+async def handle_bg_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Переключает фон в меню просмотра"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    background_id = int(query.data.replace("bg_toggle_", ""))
+    
+    try:
+        # Проверяем, применен ли фон
+        equipped = is_background_equipped(user_id, background_id)
+        
+        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        
+        if equipped:
             # Убираем фон (применяем default)
             default_bg = cursor.execute('SELECT background_id FROM backgrounds WHERE name = ?', ('default',)).fetchone()
             if default_bg:
@@ -1599,8 +1951,8 @@ async def handle_shop_toggle_background(update: Update, context: ContextTypes.DE
         clear_character_cache(user_id)
         
         await query.answer(message, show_alert=True)
-        # Обновляем карусель
-        await _show_background_carousel(update, context)
+        # Обновляем просмотр
+        await handle_bg_view_selection(update, context)
     except Exception as e:
         logger.error(f"Ошибка при переключении фона: {e}")
         await query.answer("❌ произошла ошибка!", show_alert=True)

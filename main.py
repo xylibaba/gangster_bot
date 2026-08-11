@@ -2,6 +2,13 @@ import logging
 import sys
 import sqlite3
 import asyncio
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 import time
 import random
 import os
@@ -23,12 +30,12 @@ from registration import (
     update_user_stats, update_user_name, update_user_color, update_user_gender, is_nickname_valid,
     update_user_disable_transfer_confirmation, update_user_disable_transfer_notifications,
     update_user_disable_news_notifications, update_user_disable_system_notifications,
+    get_news_subscribed_user_ids,
     get_user_activity_logs, is_admin
 )
-from utils import safe_delete_message
-from utils import format_money
+from utils import safe_delete_message, format_money, parse_amount
 
-from main_menu import show_main_menu, show_work_menu, show_user_profile, refresh_main_menu, create_profile_text, create_admin_keyboard, show_settings, show_main_settings, show_color_selection, show_gender_selection, show_notifications_settings
+from main_menu import show_main_menu, show_work_menu, show_user_profile, refresh_main_menu, create_profile_text, create_admin_keyboard, show_settings, show_main_settings, show_color_selection, show_gender_selection, show_notifications_settings, show_top_balance
 from shit_cleaner import show_shit_cleaner_menu, start_shit_cleaning, update_cleaning_time_manual, cancel_cleaning, show_cleaning_progress, is_cleaning_in_progress
 from milker import show_milker_menu, start_milking, cancel_milking, update_milking_time_manual, show_milking_progress
 from scam import show_scam_menu, handle_referral_registration, add_referral_donation_earnings, add_referral_job_earnings, init_referral_stats, show_scam_instruction
@@ -37,13 +44,14 @@ from donations import (
     show_donation_menu, pre_checkout_handler,
     successful_payment_handler,
     handle_pack_navigation, handle_buy_pack_selection, start_pack_stars_payment, start_pack_crypto_payment,
-    handle_back_to_packs
+    handle_back_to_packs, check_payment_command, check_all_pending_crypto_payments
 )
 from accessories import (init_accessories_and_backgrounds, show_wardrobe_menu, show_accessories_shop, show_backgrounds_shop,
                          show_shop_main, handle_shop_accessories_start, handle_shop_backgrounds_start, handle_shop_menu,
                          handle_shop_acc_nav, handle_shop_bg_nav, handle_shop_buy_accessory, handle_shop_buy_background, 
                          handle_shop_toggle_accessory, handle_shop_toggle_background, clear_character_cache)
-from admin_shop import show_admin_shop, handle_admin_shop_callback
+import homes
+import business
 
 # настройка логирования - отключаем все лишние логи
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -127,28 +135,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /me - открыть главное меню
 /help - показать эту справку
 
-<b>игровые команды:</b>
-"работа" - выбрать работу
-"казино" - играть в казино (в разработке)
-"магазин" - покупки (в разработке)
-"дом" - ваш дом (в разработке)
-"бизнес" - бизнес (в разработке)
-"донат" - поддержать бота (в разработке)
-"карта" - карта города (в разработке)
-"статистика" - ваша статистика
-
 <b>экономика:</b>
 /pay @username сумма - перевести деньги другому игроку
-"🔄" - обновить главное меню
-
-<b>доступные работы:</b>
-• 💩 говночист — лови лужи и собирай редкости
-• 🐄 дояр — дои коров, собирай бонусы
-
-<b>управление:</b>
-"назад" - вернуться назад
-"помощь" - показать справку
-"настройки" - изменить ник и цвет персонажа
 
 💡 <b>совет:</b> используй кнопки в меню для удобной навигации!"""
 
@@ -196,37 +184,13 @@ async def helpadm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /add_admin @username - добавить админа (только главный админ)
 /remove_admin @username - снять админа (только главный админ)
 
-<b>админ магазин:</b>
-/adminshop - открыть магазин администратора
-
 <b>основные команды:</b>
 /start - перезапустить бота
 /me - главное меню
 /help - помощь для пользователей
-/helpadm - эта справка
-
-⚠️ <b>внимание:</b> используй /adminshop для работы с админ валютой!"""
+/helpadm - эта справка"""
 
     await update.message.reply_text(helpadm_text, parse_mode='HTML')
-
-# команда для открытия магазина администратора
-async def adminshop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    # проверяем бан - забаненные пользователи игнорируются полностью
-    if is_user_banned(user_id):
-        return
-    
-    # проверяем rate limit
-    if not await rate_limit_check(update, context):
-        return
-    
-    # проверяем adminку
-    if not is_admin(user_id):
-        await show_main_menu(update, context)
-        return
-    
-    await show_admin_shop(update, context)
 
 # обработчик команды /me
 async def me_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -266,12 +230,13 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     current_user = get_user(user_id)
     
+    args = getattr(context, 'args', None) or []
     # если аргументов нет, показываем свой профиль
-    if not context.args:
+    if not args:
         await show_user_profile(update, context, current_user, is_admin_viewer=is_admin(user_id))
         return
     
-    target_username = context.args[0].replace('@', '')
+    target_username = args[0].replace('@', '')
     
     # ищем пользователя в базе
     target_user = get_user_by_username(target_username)
@@ -552,13 +517,14 @@ async def toggle_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
     await admin_refresh_profile(update, context, target_user_id)
 
 # выдача админ коинов
-async def admin_give_coins_start(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id):
+# выдача денег
+async def admin_give_money_start(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id):
     query = update.callback_query
     user_id = query.from_user.id
     
-    # Проверяем права
-    if not is_admin(user_id):
-        await query.answer("❌ только для админов!", show_alert=True)
+    # Проверяем права - ТОЛЬКО ГЛАВНЫЙ АДМИН
+    if not is_main_admin(user_id):
+        await query.answer("❌ только главный админ может выдавать деньги!", show_alert=True)
         return
     
     target_user = get_user(target_user_id)
@@ -566,23 +532,15 @@ async def admin_give_coins_start(update: Update, context: ContextTypes.DEFAULT_T
         await query.answer("❌ пользователь не найден!", show_alert=True)
         return
     
-    # Проверяем что целевой пользователь админ atau главный админ
-    is_target_admin = target_user[6] if len(target_user) > 6 else False
-    is_target_main = target_user[7] if len(target_user) > 7 else False
-    
-    if not is_target_admin and not is_target_main:
-        await query.answer("❌ можно выдать коины только админам!", show_alert=True)
-        return
-    
     nickname = target_user[2] if len(target_user) > 2 else "неизвестно"
     
     # Сохраняем ID целевого пользователя в контексте
-    context.user_data['admin_giving_coins_to'] = target_user_id
-    context.user_data['admin_giving_coins_from'] = user_id
+    context.user_data['admin_giving_money_to'] = target_user_id
+    context.user_data['admin_giving_money_from'] = user_id
     
     await query.answer()
     
-    message_text = f"💎 <b>выдача админ коинов</b>\n\nполучатель: <b>{nickname}</b>\n\nсколько коинов выдать? (введи число)"
+    message_text = f"💰 <b>выдача денег</b>\n\nполучатель: <b>{nickname}</b>\n\nсколько денег выдать? (можно ввести: 1000, 1к, 1.5к, 1кк, 1ккк, 1кккк, 1ккккк)"
     
     # Пытаемся отредактировать сообщение (может быть либо с фото, либо текстовое)
     try:
@@ -643,10 +601,15 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
             target_user_id = int(data.replace('admin_refresh_', ''))
             await admin_refresh_profile(update, context, target_user_id)
         
-        # выдача админ коинов
-        elif data.startswith('admin_give_coins_'):
-            target_user_id = int(data.replace('admin_give_coins_', ''))
-            await admin_give_coins_start(update, context, target_user_id)
+        # выдача денег
+        elif data.startswith('admin_give_money_') or data.startswith('admin_give_coins_'):
+            target_user_id = int(data.replace('admin_give_money_', '').replace('admin_give_coins_', ''))
+            await admin_give_money_start(update, context, target_user_id)
+        
+        # переключение гангстер плюс
+        elif data.startswith('admin_toggle_plus_'):
+            target_user_id = int(data.replace('admin_toggle_plus_', ''))
+            await toggle_gangster_plus(update, context, target_user_id)
         
         else:
             await query.answer("❌ неизвестная команда!", show_alert=True)
@@ -658,9 +621,42 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer("❌ произошла ошибка!", show_alert=True)
         print(f"❌ непредвиденная ошибка в handle_admin_actions: {e}")
 
+# функция для переключения подписки Гангстер Плюс главным админом
+async def toggle_gangster_plus(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user_id: int):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not is_main_admin(user_id):
+        await query.answer("❌ только главный админ может изменять подписку!", show_alert=True)
+        return
+        
+    target_user = get_user(target_user_id)
+    if not target_user:
+        await query.answer("❌ пользователь не найден!", show_alert=True)
+        return
+        
+    current_plus = target_user[18] if len(target_user) > 18 else False
+    new_plus = not current_plus
+    
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET is_gangster_plus = ? WHERE user_id = ?', (new_plus, target_user_id))
+    conn.commit()
+    conn.close()
+    
+    from accessories import clear_character_cache
+    clear_character_cache(target_user_id)
+    
+    status_text = "выдана 💎" if new_plus else "забрана ❌"
+    await query.answer(f"✅ подписка Гангстер Плюс {status_text}!")
+    
+    updated_user = get_user(target_user_id)
+    await show_user_profile(update, context, updated_user, is_admin_viewer=True)
+
 # функция для немедленного выполнения перевода (без подтверждения)
 async def confirm_transfer_immediate(update: Update, context: ContextTypes.DEFAULT_TYPE, target_user, amount):
     user_id = update.effective_user.id
+    conn = None  # инициализируем переменную
 
     # получаем актуальные данные отправителя
     from_user = get_user(user_id)
@@ -722,15 +718,17 @@ async def confirm_transfer_immediate(update: Update, context: ContextTypes.DEFAU
         # отправляем сообщение отправителю
         await update.message.reply_text(sender_message, parse_mode='HTML')
 
-        # отправляем уведомление получателю
-        try:
-            await context.bot.send_message(
-                chat_id=target_user[0],
-                text=receiver_message,
-                parse_mode='HTML'
-            )
-        except Exception as e:
-            print(f"❌ не удалось отправить уведомление получателю: {e}")
+        # отправляем уведомление получателю (если не отключены уведомления о переводах)
+        disable_transfer_notif = target_user[15] if len(target_user) > 15 else False
+        if not disable_transfer_notif:
+            try:
+                await context.bot.send_message(
+                    chat_id=target_user[0],
+                    text=receiver_message,
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                print(f"❌ не удалось отправить уведомление получателю: {e}")
 
     except sqlite3.OperationalError as e:
         if "database is locked" in str(e):
@@ -739,20 +737,22 @@ async def confirm_transfer_immediate(update: Update, context: ContextTypes.DEFAU
             await update.message.reply_text("❌ ошибка при выполнении перевода!")
         print(f"ошибка базы данных при переводе: {e}")
         try:
-            conn.rollback()
+            if conn:
+                conn.rollback()
         except Exception:
-            pass
             pass
     finally:
         try:
-            conn.close()
-        except:
+            if conn:
+                conn.close()
+        except Exception:
             pass
 
 # функция для подтверждения перевода денег
 async def confirm_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
+    conn = None  # инициализируем переменную
 
     if 'pending_transfer' not in context.user_data:
         await query.answer("❌ нет ожидающего перевода!")
@@ -824,15 +824,17 @@ async def confirm_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # отправляем сообщение отправителю
         await query.message.edit_text(sender_message, parse_mode='HTML')
 
-        # отправляем уведомление получателю
-        try:
-            await context.bot.send_message(
-                chat_id=target_user[0],
-                text=receiver_message,
-                parse_mode='HTML'
-            )
-        except Exception as e:
-            print(f"❌ не удалось отправить уведомление получателю: {e}")
+        # отправляем уведомление получателю (если не отключены уведомления о переводах)
+        disable_transfer_notif = target_user[15] if len(target_user) > 15 else False
+        if not disable_transfer_notif:
+            try:
+                await context.bot.send_message(
+                    chat_id=target_user[0],
+                    text=receiver_message,
+                    parse_mode='HTML'
+                )
+            except Exception as e:
+                print(f"❌ не удалось отправить уведомление получателю: {e}")
 
         # очищаем данные перевода
         del context.user_data['pending_transfer']
@@ -844,7 +846,8 @@ async def confirm_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("❌ ошибка при выполнении перевода!")
         print(f"ошибка базы данных при переводе: {e}")
         try:
-            conn.rollback()
+            if conn:
+                conn.rollback()
         except Exception:
             pass
         del context.user_data['pending_transfer']
@@ -852,13 +855,15 @@ async def confirm_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ ошибка при выполнении перевода!")
         print(f"ошибка перевода: {e}")
         try:
-            conn.rollback()
+            if conn:
+                conn.rollback()
         except Exception:
             pass
         del context.user_data['pending_transfer']
     finally:
         try:
-            conn.close()
+            if conn:
+                conn.close()
         except Exception:
             pass
 async def transfer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -885,35 +890,16 @@ async def transfer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     from_user_balance = from_user[5]
     
+    args = getattr(context, 'args', None) or []
     # проверяем аргументы
-    if len(context.args) < 2:
+    if len(args) < 2:
         await update.message.reply_text("❌ использование: /pay @username сумма")
         return
     
-    target_username = context.args[0].replace('@', '')
+    target_username = args[0].replace('@', '')
     
-    try:
-        amount_str = context.args[1].lower().replace(',', '.').replace(' ', '')
-        
-          # если ввели "все" - переводим весь баланс
-        if amount_str == 'все':
-            amount = from_user_balance
-        else:
-            # обрабатываем сокращения
-            if 'ккккк' in amount_str:
-                amount = int(float(amount_str.replace('ккккк', '')) * 10000000000000)
-            elif 'кккк' in amount_str:
-                amount = int(float(amount_str.replace('кккк', '')) * 1000000000000)
-            elif 'ккк' in amount_str:
-                amount = int(float(amount_str.replace('ккк', '')) * 1000000000)
-            elif 'кк' in amount_str:
-                amount = int(float(amount_str.replace('кк', '')) * 1000000)
-            elif 'к' in amount_str:
-                amount = int(float(amount_str.replace('к', '')) * 1000)
-            else:
-                amount = int(float(amount_str))
-            
-    except ValueError:
+    amount = parse_amount(args[1], max_amount=from_user_balance)
+    if amount <= 0:
         await update.message.reply_text("❌ неверный формат суммы! используйте: 1000, 1к, 1.5к, 1кк, 1ккк, 1кккк, 1ккккк или 'все'")
         return
     
@@ -1006,13 +992,14 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return
     
+    args = getattr(context, 'args', None) or []
     # проверяем аргументы
-    if len(context.args) < 1:
+    if len(args) < 1:
         await update.message.reply_text("❌ использование: /ban @username [причина]")
         return
     
-    target_username = context.args[0].replace('@', '')
-    reason = " ".join(context.args[1:]) if len(context.args) > 1 else "причина не указана"
+    target_username = args[0].replace('@', '')
+    reason = " ".join(args[1:]) if len(args) > 1 else "причина не указана"
     
     # ищем пользователя в базе
     target_user = get_user_by_username(target_username)
@@ -1066,12 +1053,13 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return
     
+    args = getattr(context, 'args', None) or []
     # проверяем аргументы
-    if not context.args:
+    if not args:
         await update.message.reply_text("❌ использование: /unban @username")
         return
     
-    target_username = context.args[0].replace('@', '')
+    target_username = args[0].replace('@', '')
     
     # ищем пользователя в базе
     target_user = get_user_by_username(target_username)
@@ -1124,12 +1112,13 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_main_menu(update, context)
         return
     
+    args = getattr(context, 'args', None) or []
     # проверяем аргументы
-    if not context.args:
+    if not args:
         await update.message.reply_text("❌ использование: /add_admin @username")
         return
     
-    target_username = context.args[0].replace('@', '')
+    target_username = args[0].replace('@', '')
     
     # ищем пользователя в базе
     target_user = get_user_by_username(target_username)
@@ -1191,12 +1180,13 @@ async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
         await show_main_menu(update, context)
         return
     
+    args = getattr(context, 'args', None) or []
     # проверяем аргументы
-    if not context.args:
+    if not args:
         await update.message.reply_text("❌ использование: /remove_admin @username")
         return
     
-    target_username = context.args[0].replace('@', '')
+    target_username = args[0].replace('@', '')
     
     # ищем пользователя в базе
     target_user = get_user_by_username(target_username)
@@ -1235,6 +1225,175 @@ async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
         print(f"❌ не удалось отправить уведомление пользователю: {e}")
     
     await update.message.reply_text(f"✅ у пользователя @{target_username} снята админка!")
+
+# команда рассылки новостей для главного админа
+async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if is_user_banned(user_id):
+        return
+        
+    if not is_main_admin(user_id):
+        await update.message.reply_text("❌ только главный админ может делать рассылку!")
+        return
+        
+    from registration import get_news_subscribed_user_ids
+    user_ids = get_news_subscribed_user_ids()
+    
+    if not user_ids:
+        await update.message.reply_text("❌ нет пользователей для рассылки!")
+        return
+        
+    msg = update.message
+    reply_msg = msg.reply_to_message
+    
+    target_msg_id = None
+    clean_caption = None
+    import re
+    
+    if reply_msg:
+        target_msg_id = reply_msg.message_id
+    elif msg.photo or msg.video or msg.animation or msg.document or msg.audio or msg.voice:
+        target_msg_id = msg.message_id
+        raw_caption = msg.caption or ""
+        clean_caption = re.sub(r'^/news(@\w+)?\s*', '', raw_caption, flags=re.IGNORECASE).strip()
+    else:
+        args = getattr(context, 'args', None) or []
+        raw_text = msg.text or ""
+        clean_text = raw_text.replace("/news", "").strip()
+        
+        if not clean_text and not args:
+            await update.message.reply_text(
+                "📢 <b>рассылка новостей (/news)</b>\n\n"
+                "<b>способы использования:</b>\n"
+                "• <code>/news Текст сообщения</code> — рассылка текста\n"
+                "• Прикрепить фото/видео с подписью <code>/news Текст</code> — рассылка медиа с текстом\n"
+                "• Ответить командой <code>/news</code> на любое сообщение, фото или видео",
+                parse_mode='HTML'
+            )
+            return
+        
+        target_msg_id = None
+        clean_caption = clean_text or " ".join(args)
+        
+    status_msg = await update.message.reply_text(f"⏳ запуск рассылки для {len(user_ids)} пользователей...")
+    
+    success_count = 0
+    fail_count = 0
+    
+    for uid in user_ids:
+        try:
+            if target_msg_id:
+                copy_kwargs = {
+                    'chat_id': uid,
+                    'from_chat_id': msg.chat_id,
+                    'message_id': target_msg_id
+                }
+                if clean_caption is not None:
+                    copy_kwargs['caption'] = clean_caption
+                    copy_kwargs['parse_mode'] = 'HTML'
+                await context.bot.copy_message(**copy_kwargs)
+            else:
+                await context.bot.send_message(chat_id=uid, text=clean_caption, parse_mode='HTML')
+            
+            success_count += 1
+            await asyncio.sleep(0.04)
+        except Exception as e:
+            bot_logger.warning(f"Could not send news to user {uid}: {e}")
+            fail_count += 1
+            
+    await status_msg.edit_text(
+        f"✅ <b>рассылка завершена!</b>\n\n"
+        f"📊 <b>статистика:</b>\n"
+        f"• успешно доставлено: <b>{success_count}</b>\n"
+        f"• ошибок/заблокировано: <b>{fail_count}</b>",
+        parse_mode='HTML'
+    )
+
+# команда важной рассылки новостей для главного админа (доставляется ВСЕМ зарегистрированным пользователям)
+async def onews_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if is_user_banned(user_id):
+        return
+        
+    if not is_main_admin(user_id):
+        await update.message.reply_text("❌ только главный админ может делать важную рассылку!")
+        return
+        
+    from registration import get_all_user_ids
+    user_ids = get_all_user_ids()
+    
+    if not user_ids:
+        await update.message.reply_text("❌ нет зарегистрированных пользователей для рассылки!")
+        return
+        
+    msg = update.message
+    reply_msg = msg.reply_to_message
+    
+    target_msg_id = None
+    clean_caption = None
+    import re
+    
+    if reply_msg:
+        target_msg_id = reply_msg.message_id
+    elif msg.photo or msg.video or msg.animation or msg.document or msg.audio or msg.voice:
+        target_msg_id = msg.message_id
+        raw_caption = msg.caption or ""
+        clean_caption = re.sub(r'^/onews(@\w+)?\s*', '', raw_caption, flags=re.IGNORECASE).strip()
+    else:
+        args = getattr(context, 'args', None) or []
+        raw_text = msg.text or ""
+        clean_text = raw_text.replace("/onews", "").strip()
+        
+        if not clean_text and not args:
+            await update.message.reply_text(
+                "🚨 <b>важная рассылка новостей (/onews)</b>\n\n"
+                "<i>Эта рассылка доставляется ВСЕМ пользователям, независимо от их настроек уведомлений.</i>\n\n"
+                "<b>способы использования:</b>\n"
+                "• <code>/onews Текст сообщения</code> — важная рассылка текста\n"
+                "• Прикрепить фото/видео с подписью <code>/onews Текст</code> — важная рассылка медиа с текстом\n"
+                "• Ответить командой <code>/onews</code> на любое сообщение, фото или видео",
+                parse_mode='HTML'
+            )
+            return
+        
+        target_msg_id = None
+        clean_caption = clean_text or " ".join(args)
+        
+    status_msg = await update.message.reply_text(f"⏳ запуск важной рассылки для {len(user_ids)} пользователей...")
+    
+    success_count = 0
+    fail_count = 0
+    
+    for uid in user_ids:
+        try:
+            if target_msg_id:
+                copy_kwargs = {
+                    'chat_id': uid,
+                    'from_chat_id': msg.chat_id,
+                    'message_id': target_msg_id
+                }
+                if clean_caption is not None:
+                    copy_kwargs['caption'] = clean_caption
+                    copy_kwargs['parse_mode'] = 'HTML'
+                await context.bot.copy_message(**copy_kwargs)
+            else:
+                await context.bot.send_message(chat_id=uid, text=clean_caption, parse_mode='HTML')
+            
+            success_count += 1
+            await asyncio.sleep(0.04)
+        except Exception as e:
+            bot_logger.warning(f"Could not send important news to user {uid}: {e}")
+            fail_count += 1
+            
+    await status_msg.edit_text(
+        f"✅ <b>важная рассылка завершена!</b>\n\n"
+        f"📊 <b>статистика:</b>\n"
+        f"• успешно доставлено: <b>{success_count}</b>\n"
+        f"• ошибок/заблокировано: <b>{fail_count}</b>",
+        parse_mode='HTML'
+    )
 
 # обработчик неизвестных команд
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1435,69 +1594,52 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         await start(update, context, MAIN_ADMIN_ID)
         return
     
-    # обработка выдачи админ коинов
-    if 'admin_giving_coins_to' in context.user_data:
-        target_user_id = context.user_data['admin_giving_coins_to']
+    # обработка выдачи денег
+    if 'admin_giving_money_to' in context.user_data or 'admin_giving_coins_to' in context.user_data:
+        target_user_id = context.user_data.get('admin_giving_money_to') or context.user_data.get('admin_giving_coins_to')
+        
+        amount = parse_amount(update.message.text)
+        if amount <= 0:
+            await update.message.reply_text("❌ неверный формат суммы! используйте: 1000, 1к, 1.5к, 1кк, 1ккк, 1кккк, 1ккккк")
+            return
+            
+        if amount <= 0:
+            await update.message.reply_text("❌ сумма денег должна быть больше нуля!")
+            return
+            
+        new_balance = update_user_money(target_user_id, amount)
+        
+        target_user = get_user(target_user_id)
+        nickname = target_user[2] if target_user and len(target_user) > 2 else "неизвестно"
+        
+        log_admin_action(user_id, "give_money", target_user_id, f"выдано {format_money(amount)} денег")
+        
+        if 'admin_giving_money_to' in context.user_data:
+            del context.user_data['admin_giving_money_to']
+        if 'admin_giving_coins_to' in context.user_data:
+            del context.user_data['admin_giving_coins_to']
+        if 'admin_giving_coins_from' in context.user_data:
+            del context.user_data['admin_giving_coins_from']
+            
+        admin_name = update.effective_user.username or "админ"
+        await update.message.reply_text(f"✅ {nickname} получил {format_money(amount)}!", parse_mode='HTML')
         
         try:
-            amount = int(update.message.text.strip())
+            notification = f"💰 <b>вам выдали деньги!</b>\n\nполучено: <b>{format_money(amount)}</b>\n"
+            if new_balance is not None:
+                notification += f"новый баланс: <b>{format_money(new_balance)}</b>"
+            notification += f"\n\nотправитель: <b>{admin_name}</b> (@{admin_name})"
             
-            if amount <= 0:
-                await update.message.reply_text("❌ количество коинов должно быть больше нуля!")
-                return
+            await context.bot.send_message(
+                chat_id=target_user_id,
+                text=notification,
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            print(f"⚠️ не удалось отправить уведомление пользователю {target_user_id}: {e}")
             
-            # Даём коины
-            from registration import update_admin_currency
-            new_balance = update_admin_currency(target_user_id, amount)
-            
-            if new_balance is None:
-                await update.message.reply_text(f"❌ ошибка при выдаче коинов! проверьте логи.")
-                return
-            
-            target_user = get_user(target_user_id)
-            nickname = target_user[2] if target_user and len(target_user) > 2 else "неизвестно"
-            
-            # Логируем действие
-            log_admin_action(user_id, "give_coins", target_user_id, f"выдано {amount} админ коинов")
-            
-            # Удаляем из контекста
-            del context.user_data['admin_giving_coins_to']
-            if 'admin_giving_coins_from' in context.user_data:
-                del context.user_data['admin_giving_coins_from']
-            
-            # Отправляем сообщение об успехе админу
-            admin_name = update.effective_user.username or "админ"
-            await update.message.reply_text(f"✅ {nickname} получил {amount} админ коинов!", parse_mode='HTML')
-            
-            # Отправляем уведомление целевому пользователю
-            try:
-                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                
-                notification = f"💎 <b>вы получили админ коины!</b>\n\nполучено: <b>{amount}</b> коинов\n"
-                if new_balance is not None:
-                    notification += f"новый баланс: <b>{new_balance}</b> коинов"
-                notification += f"\n\nотправитель: <b>{admin_name}</b> (@{admin_name})"
-                
-                keyboard = [
-                    [InlineKeyboardButton("🛍️ перейти в магазин", callback_data="admin_shop")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await context.bot.send_message(
-                    chat_id=target_user_id,
-                    text=notification,
-                    parse_mode='HTML',
-                    reply_markup=reply_markup
-                )
-            except Exception as e:
-                print(f"⚠️ не удалось отправить уведомление пользователю {target_user_id}: {e}")
-            
-            # Возвращаемся в главное меню
-            await show_main_menu(update, context)
-            return
-        except ValueError:
-            await update.message.reply_text("❌ введите корректное число!")
-            return
+        await show_main_menu(update, context)
+        return
     
     text = update.message.text.strip().lower()
     first_word = text.split()[0] if text.split() else text
@@ -1505,7 +1647,7 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
     handled = False
 
     # обработка кнопок главного меню
-    if text == "работа":
+    if text in ["работа", "работа ✅"]:
         handled = True
         await show_work_menu(update, context)
         return
@@ -1580,11 +1722,11 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
             del context.user_data['inactive_messages']
         await show_main_menu(update, context)
         return
-    elif text == "🔄":  # обработка кнопки обновления
+    elif text in ["🔄", "🔄 ✅"]:  # обработка кнопки обновления
         handled = True
         await refresh_main_menu(update, context)
         return
-    elif text == "казино":
+    elif text in ["казино", "казино ✅"]:
         handled = True
         await show_casino_menu(update, context)
         return
@@ -1601,33 +1743,26 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         return
     elif text == "🎨 магазин фонов":
         handled = True
-        await update.message.reply_text("😔 фоны временно недоступны")
-        await show_shop_main(update, context)
+        context.user_data['current_background_index'] = 0
+        context.user_data['in_backgrounds_shop'] = True
+        from accessories import _show_background_carousel
+        await _show_background_carousel(update, context)
         return
-    elif text == "💎 админ магазин":
-        handled = True
-        # Проверяем что пользователь админ
-        if is_admin(user_id):
-            from admin_shop import show_admin_shop
-            await show_admin_shop(update, context)
-        else:
-            await update.message.reply_text("❌ это только для администраторов!")
-            await show_shop_main(update, context)
-        return
-    elif text == "назад" and context.user_data.get('in_accessories_shop'):
+    elif text == "назад" and (context.user_data.get('in_accessories_shop') or context.user_data.get('in_backgrounds_shop')):
         handled = True
         context.user_data['in_accessories_shop'] = False
+        context.user_data['in_backgrounds_shop'] = False
         await show_shop_main(update, context)
         return
     elif text == "дом":
         handled = True
-        await update.message.reply_text("🏠 дом в разработке")
+        await homes.show_homes_shop(update, context)
         return
     elif text == "бизнес":
         handled = True
-        await update.message.reply_text("💼 бизнес в разработке")
+        await business.show_business_shop(update, context)
         return
-    elif text == "донат":
+    elif text in ["донат", "донат ✅"]:
         handled = True
         await show_donation_menu(update, context)
         return
@@ -1635,9 +1770,13 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         handled = True
         await update.message.reply_text("🗺️ карта в разработке")
         return
-    elif text == "помощь":  # обработка текстовой команды помощи
+    elif text in ["помощь", "помощь ✅"]:  # обработка текстовой команды помощи
         handled = True
         await help_command(update, context)
+        return
+    elif text in ["топ", "🏆 топ", "топ 🏆"]:
+        handled = True
+        await show_top_balance(update, context)
         return
     elif text == "⚙️":
         handled = True
@@ -1653,11 +1792,16 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         handled = True
         await show_main_settings(update, context)
         return
-    elif text == "⬅️ назад" and context.user_data.get('in_main_settings'):
+    elif text == "уведомления" and context.user_data.get('in_settings'):
         handled = True
-        # очищаем состояние основных настроек
+        await show_notifications_settings(update, context)
+        return
+    elif text == "⬅️ назад" and (context.user_data.get('in_main_settings') or context.user_data.get('in_notifications_settings')):
+        handled = True
         if 'in_main_settings' in context.user_data:
             del context.user_data['in_main_settings']
+        if 'in_notifications_settings' in context.user_data:
+            del context.user_data['in_notifications_settings']
         await show_settings(update, context)
         return
     elif text == "⬅️ назад" and context.user_data.get('in_settings'):
@@ -1771,11 +1915,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /ban @username [причина] - забанить пользователя
 /unban @username - разбанить пользователя
 
-<b>управление экономикой:</b>
-/money @username сумма - выдать/снять деньги
-• поддерживаются сокращения: к, кк, ккк, кккк, ккккк
-• примеры: 1000, 1к, 1.5к, 1кк, 1ккк
-
 <b>управление админами:</b>
 /add_admin @username - добавить админа (только главный админ)
 /remove_admin @username - снять админа (только главный админ)
@@ -1786,7 +1925,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /help - помощь для пользователей
 /helpadm - полная справка по админам
 
-⚠️ <b>внимание:</b> будьте осторожны с выдачей денег и баном пользователей!"""
+⚠️ <b>внимание:</b> будьте осторожны с баном пользователей!"""
             
             keyboard = [
                 [InlineKeyboardButton("⬅️ назад", callback_data="help_back_to_user")]
@@ -1819,28 +1958,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /me - открыть главное меню
 /help - показать эту справку
 
-<b>игровые команды:</b>
-"работа" - выбрать работу
-"казино" - играть в казино (в разработке)
-"магазин" - покупки (в разработке)
-"дом" - ваш дом (в разработке)
-"бизнес" - бизнес (в разработке)
-"донат" - поддержать бота (в разработке)
-"карта" - карта города (в разработке)
-"статистика" - ваша статистика
-
 <b>экономика:</b>
 /pay @username сумма - перевести деньги другому игроку
-"🔄" - обновить главное меню
-
-<b>доступные работы:</b>
-• 💩 говночист — лови лужи и собирай редкости
-• 🐄 дояр — дои коров, собирай бонусы
-
-<b>управление:</b>
-"назад" - вернуться назад
-"помощь" - показать справку
-"настройки" - изменить ник и цвет персонажа
 
 💡 <b>совет:</b> используй кнопки в меню для удобной навигации!"""
             
@@ -2066,20 +2185,36 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if query.message.message_id != context.user_data.get('main_settings_message_id'):
                 await query.answer("❌ кнопка неактивна!", show_alert=True)
                 return
-            await show_gender_selection(update, context)
+            
+            # получаем текущий пол и меняем на противоположный
+            user_id = query.from_user.id
+            user = get_user(user_id)
+            current_gender = user[3] if len(user) > 3 else "male"
+            new_gender = "female" if current_gender == "male" else "male"
+            
+            # меняем пол
+            update_user_gender(user_id, new_gender)
+            clear_character_cache(user_id)
+            
+            # отправляем уведомление
+            gender_text = "мужской" if new_gender == "male" else "женский"
+            await query.answer(f"✅ пол изменен на {gender_text}!")
+            
+            # обновляем настройки
+            await show_main_settings(update, context)
 
         elif data == "settings_gender_male":
             user_id = query.from_user.id
             update_user_gender(user_id, "male")
             clear_character_cache(user_id)
-            await query.answer("✅ пол изменен на парень!")
+            await query.answer("✅ пол изменен на мужской!")
             await show_main_settings(update, context)
 
         elif data == "settings_gender_female":
             user_id = query.from_user.id
             update_user_gender(user_id, "female")
             clear_character_cache(user_id)
-            await query.answer("✅ пол изменен на девушка!")
+            await query.answer("✅ пол изменен на женский!")
             await show_main_settings(update, context)
 
         elif data == "settings_change_name":
@@ -2093,21 +2228,31 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if query.message.message_id != context.user_data.get('main_settings_message_id'):
                 await query.answer("❌ кнопка неактивна!", show_alert=True)
                 return
-            await show_color_selection(update, context)
+            user_id = query.from_user.id
+            user = get_user(user_id)
+            current_color = user[4] if len(user) > 4 else "black"
+            new_color = "white" if current_color == "black" else "black"
+
+            update_user_color(user_id, new_color)
+            clear_character_cache(user_id)
+
+            color_text = "черный" if new_color == "black" else "белый"
+            await query.answer(f"✅ цвет кожи изменен на {color_text}!")
+            await show_main_settings(update, context)
 
         elif data == "settings_color_black":
             user_id = query.from_user.id
             update_user_color(user_id, "black")
             clear_character_cache(user_id)
             await query.answer("✅ цвет изменен на черный!")
-            await show_settings(update, context)
+            await show_main_settings(update, context)
 
         elif data == "settings_color_white":
             user_id = query.from_user.id
             update_user_color(user_id, "white")
             clear_character_cache(user_id)
             await query.answer("✅ цвет изменен на белый!")
-            await show_settings(update, context)
+            await show_main_settings(update, context)
 
         elif data == "settings_main":
             if query.message.message_id != context.user_data.get('settings_message_id'):
@@ -2150,11 +2295,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             parse_mode='HTML'
                         )
                     except Exception:
-                        await query.message.reply_text(
-                            warning_text,
-                            reply_markup=reply_markup,
-                            parse_mode='HTML'
-                        )
+                        try:
+                            await query.edit_message_text(
+                                text=warning_text,
+                                reply_markup=reply_markup,
+                                parse_mode='HTML'
+                            )
+                        except Exception as e:
+                            logger.error(f"Ошибка при редактировании предупреждения перевода: {e}")
 
         elif data == "confirm_disable_transfer":
             if 'confirm_disable_transfer' in context.user_data:
@@ -2217,6 +2365,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == "settings_back":
             await show_main_menu(update, context)
+
+        elif data == "refresh_top_balance" or data == "top_balance":
+            await show_top_balance(update, context)
 
         # обработка кнопок блэкджека
         elif data == "blackjack_hit":
@@ -2338,7 +2489,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await handle_shop_acc_nav(update, context, "prev")
             elif data == "shop_acc_next":
                 await handle_shop_acc_nav(update, context, "next")
-            elif data == "shop_acc_status":
+            elif data in ["shop_acc_status", "shop_bg_disabled"]:
                 await update.callback_query.answer()
             elif data == "shop_bg_prev":
                 await handle_shop_bg_nav(update, context, "prev")
@@ -2361,12 +2512,82 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif data == "wardrobe_backgrounds":
                 await show_backgrounds_shop(update, context)
         
-        # обработка магазина админ валюты
-        elif data.startswith("admin_shop") or data.startswith("admin_exchange") or data.startswith("admin_buy"):
-            if data == "admin_shop":
-                await show_admin_shop(update, context)
-            else:
-                await handle_admin_shop_callback(update, context, data)
+        # обработка выбора типа аксессуара
+        elif data.startswith("acc_type_"):
+            from accessories import handle_acc_type_selection
+            await handle_acc_type_selection(update, context)
+        
+        # обработка просмотра аксессуара и его действий
+        elif data.startswith("acc_"):
+            from accessories import handle_acc_view_details, handle_acc_buy, handle_acc_equip
+            if data.startswith("acc_view_"):
+                await handle_acc_view_details(update, context)
+            elif data.startswith("acc_buy_"):
+                await handle_acc_buy(update, context)
+            elif data.startswith("acc_equip_"):
+                await handle_acc_equip(update, context)
+        
+        # обработка просмотра фонов
+        elif data.startswith("bg_"):
+            from accessories import handle_bg_view_selection, handle_bg_buy, handle_bg_toggle
+            if data.startswith("bg_view_"):
+                await handle_bg_view_selection(update, context)
+            elif data.startswith("bg_buy_"):
+                await handle_bg_buy(update, context)
+            elif data.startswith("bg_toggle_"):
+                await handle_bg_toggle(update, context)
+        
+
+        
+        # обработка домов и квартир
+        elif data.startswith("homes_"):
+            if data == "homes_next":
+                await homes.handle_homes_navigation(update, context, "next")
+            elif data == "homes_prev":
+                await homes.handle_homes_navigation(update, context, "prev")
+            elif data.startswith("homes_buy_"):
+                try:
+                    home_index = int(data.split("_")[2])
+                    await homes.buy_home(update, context, home_index)
+                except (ValueError, IndexError):
+                    await query.answer("❌ ошибка при покупке дома", show_alert=True)
+            elif data == "homes_wardrobe":
+                await homes.show_wardrobe(update, context)
+            elif data.startswith("wardrobe_add_"):
+                try:
+                    slot = int(data.split("_")[2])
+                    await homes.add_skin_to_wardrobe(update, context, slot)
+                except (ValueError, IndexError):
+                    await query.answer("❌ ошибка при добавлении скина", show_alert=True)
+            elif data.startswith("wardrobe_remove_"):
+                try:
+                    slot = int(data.split("_")[2])
+                    await homes.remove_skin_from_wardrobe(update, context, slot)
+                except (ValueError, IndexError):
+                    await query.answer("❌ ошибка при удалении скина", show_alert=True)
+            elif data == "homes_no_money":
+                await query.answer("❌ у вас недостаточно денег для этого", show_alert=True)
+        
+        # обработка бизнеса
+        elif data.startswith("business_"):
+            if data == "business_orders":
+                await business.show_business_orders(update, context)
+            elif data.startswith("business_buy_"):
+                try:
+                    business_index = int(data.split("_")[2])
+                    await business.buy_business(update, context, business_index)
+                except (ValueError, IndexError):
+                    await query.answer("❌ ошибка при покупке бизнеса", show_alert=True)
+            elif data.startswith("business_order_"):
+                try:
+                    amount = int(data.split("_")[2])
+                    await business.order_raw_material(update, context, amount)
+                except (ValueError, IndexError):
+                    await query.answer("❌ ошибка при заказе материалов", show_alert=True)
+            elif data == "business_no_money":
+                await query.answer("❌ у вас недостаточно денег для этого", show_alert=True)
+            elif data == "business_no_business":
+                await query.answer("❌ сначала купите бизнес", show_alert=True)
         
         else:
             print(f"⚠️ неизвестная callback data: {data}")
@@ -2441,12 +2662,14 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("helpadm", helpadm_command))
     application.add_handler(CommandHandler("profile", profile_command))
-    application.add_handler(CommandHandler("adminshop", adminshop_command))
     application.add_handler(CommandHandler("pay", transfer_command))
     application.add_handler(CommandHandler("ban", ban_command))
     application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("add_admin", add_admin_command))
     application.add_handler(CommandHandler("remove_admin", remove_admin_command))
+    application.add_handler(CommandHandler("news", news_command))
+    application.add_handler(CommandHandler("onews", onews_command))
+    application.add_handler(CommandHandler("top", show_top_balance))
     
     # обработчики платежей
     application.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
@@ -2459,6 +2682,10 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_all_text_messages_wrapper))
     
     application.add_error_handler(error_handler)
+    
+    # Регистрируем фоновую задачу для проверки крипто-платежей каждые 30 секунд
+    job_queue = application.job_queue
+    job_queue.run_repeating(check_all_pending_crypto_payments, interval=30, first=5)
     
     print("✅ бот запущен и готов к работе!")
     print("📱 теперь иди в telegram и напиши /start боту")

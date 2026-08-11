@@ -1,0 +1,11 @@
+python-socketio[client]
+aiohttp
+requests
+websocket-client
+sqlalchemy
+asyncpg
+aiosqlite
+PyQt6
+cryptography
+bcrypt
+greenlet

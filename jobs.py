@@ -1,9 +1,16 @@
-from registration import get_user_stats
+import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+from telegram import KeyboardButton, ReplyKeyboardMarkup
+from registration import get_user_stats, get_user
 from utils import format_money
 
 # Показать статистику - ОБНОВЛЕННАЯ
 async def show_stats(update, context):
-    from registration import get_user
     user_id = update.effective_user.id
     user = get_user(user_id)
 
@@ -56,7 +63,6 @@ async def show_stats(update, context):
 💰 <b>Всего заработано:</b> {format_money(total_earned)}"""
     
     # Клавиатура для статистики
-    from telegram import KeyboardButton, ReplyKeyboardMarkup
     keyboard = [[KeyboardButton("назад")]]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     

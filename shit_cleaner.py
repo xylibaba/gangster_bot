@@ -1,3 +1,10 @@
+import sys
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 import os
 import random
 import asyncio
@@ -294,7 +301,7 @@ async def finish_shit_cleaning(update: Update, context: ContextTypes.DEFAULT_TYP
     # Проверяем подписку гангстер плюс
     is_gangster_plus = user[18] if len(user) > 18 else False
     if is_gangster_plus:
-        salary *= 3
+        salary *= 4
     
     # Обновляем статистику
     update_user_stats(user_id, shit_cleaned=1, money_earned=salary)
@@ -308,7 +315,7 @@ async def finish_shit_cleaning(update: Update, context: ContextTypes.DEFAULT_TYP
     # Форматируем время работы
     time_worked = format_time(duration)
     
-    bonus_text = " (x3 гангстер плюс)" if is_gangster_plus else ""
+    bonus_text = " (x4 гангстер плюс)" if is_gangster_plus else ""
     
     message_text = f"✅ <b>{profile_link}</b>, ты успешно почистил говно!\n\n💰 заработано: <b>{format_money(salary)}</b>{bonus_text}\n⏰ время работы: <b>{time_worked}</b>\n💩 почищено говна: +1"
     
