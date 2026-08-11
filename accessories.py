@@ -11,7 +11,7 @@ import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
 from telegram.ext import ContextTypes
 from registration import get_user, update_user_money, is_admin
-from utils import format_money, safe_delete_message
+from utils import format_money, safe_delete_message, maybe_send_channel_reminder
 
 try:
     from PIL import Image
@@ -22,18 +22,44 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 def clear_character_cache(user_id):
-    """Очищает кэш отрисованного персонажа"""
+    """Очищает кэш отрисованного персонажа и физически удаляет временные файлы"""
     try:
         from main_menu import character_cache
-        # Очищаем кэш основного меню
         if user_id in character_cache:
+            file_path = character_cache[user_id]
             del character_cache[user_id]
-        # Очищаем кэш профиля
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+                    
         profile_key = f"profile_{user_id}"
         if profile_key in character_cache:
+            file_path = character_cache[profile_key]
             del character_cache[profile_key]
-    except:
-        pass
+            if file_path and os.path.exists(file_path):
+                try:
+                    os.remove(file_path)
+                except Exception:
+                    pass
+                    
+        # Удаляем временные картинки данного пользователя
+        user_temp_files = [
+            f'temp/temp_main_{user_id}.png',
+            f'temp/temp_profile_{user_id}.png',
+            f'temp/temp_settings_{user_id}.png',
+            f'temp/temp_char_{user_id}.png',
+            f'temp/temp_character_{user_id}.png'
+        ]
+        for tf in user_temp_files:
+            if os.path.exists(tf):
+                try:
+                    os.remove(tf)
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"Ошибка при очистке кэша персонажа: {e}")
 
 # ==========================================
 # 📦 АКСЕССУАРЫ И ФОНЫ
@@ -54,6 +80,13 @@ DEFAULT_SKINS = [
         "price": 0,
         "image_file": "images/character_white.jpg",
         "is_default": False
+    },
+    {
+        "name": "молодой",
+        "description": "эксклюзивный скин из донат-набора «молодой»",
+        "price": 0,
+        "image_file": "images/skins_donation_1.jpg",
+        "is_default": False
     }
 ]
 
@@ -62,9 +95,16 @@ DEFAULT_ACCESSORIES = [
     {
         "name": "пистолет",
         "type": "hand",
-        "description": "крутой пистолет в руке",
-        "price": 50000,
-        "image_file": "images/accessory_gun.png"
+        "description": "эксклюзивный пистолет за участие в тесте",
+        "price": 0,
+        "image_file": "images/accessory_gun.jpg"
+    },
+    {
+        "name": "молодой",
+        "type": "body",
+        "description": "эксклюзивный скин молодой из донат-набора",
+        "price": 0,
+        "image_file": "images/skins_donation_1.jpg"
     }
 ]
 
@@ -75,6 +115,12 @@ DEFAULT_BACKGROUNDS = [
         "description": "солнечный город Лос-Сантос",
         "price": 100000,
         "image_file": "images/1_background.jpg"
+    },
+    {
+        "name": "виндовс хр",
+        "description": "легендарные зеленые холмы Windows XP",
+        "price": 250000,
+        "image_file": "images/2_background.jpg"
     }
 ]
 
@@ -104,7 +150,7 @@ def init_accessories_and_backgrounds():
                 ''', (acc['name'], acc['type'], acc['description'], acc['price'], acc['image_file']))
         
         # Удаляем устаревшие фоны
-        cursor.execute("DELETE FROM backgrounds WHERE image_file NOT IN ('images/1_background.jpg', 'images/default_background.jpg')")
+        cursor.execute("DELETE FROM backgrounds WHERE image_file NOT IN ('images/1_background.jpg', 'images/2_background.jpg', 'images/default_background.jpg')")
 
         # Добавляем стандартные фоны (проверяем что их еще нет)
         for bg in DEFAULT_BACKGROUNDS:
@@ -169,6 +215,85 @@ def get_user_accessories(user_id):
     
     return accessories
 
+def get_accessory_id_by_name(name: str):
+    """Получает accessory_id аксессуара по имени"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT accessory_id FROM accessories WHERE name = ?', (name,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else None
+
+def ensure_gun_accessory_in_db():
+    """Гарантирует существование эксклюзивного аксессуара 'пистолет' в БД"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT accessory_id FROM accessories WHERE name = 'пистолет'")
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute('''
+            INSERT INTO accessories (name, type, description, price, image_file, is_available)
+            VALUES ('пистолет', 'hand', 'эксклюзивный пистолет за участие в тесте', 0, 'images/accessory_gun.jpg', FALSE)
+        ''')
+        acc_id = cursor.lastrowid
+    else:
+        acc_id = row[0]
+        cursor.execute("UPDATE accessories SET image_file = 'images/accessory_gun.jpg', is_available = FALSE WHERE accessory_id = ?", (acc_id,))
+    conn.commit()
+    conn.close()
+    return acc_id
+
+def ensure_molodoy_accessory_in_db():
+    """Гарантирует существование аксессуара 'молодой' в БД"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT accessory_id FROM accessories WHERE name = 'молодой'")
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute('''
+            INSERT INTO accessories (name, type, description, price, image_file, is_available)
+            VALUES ('молодой', 'body', 'эксклюзивный скин молодой из донат-набора', 0, 'images/skins_donation_1.jpg', FALSE)
+        ''')
+        acc_id = cursor.lastrowid
+    else:
+        acc_id = row[0]
+        cursor.execute("UPDATE accessories SET image_file = 'images/skins_donation_1.jpg', type = 'body' WHERE accessory_id = ?", (acc_id,))
+    conn.commit()
+    conn.close()
+    return acc_id
+
+def give_user_molodoy_accessory(user_id: int):
+    """Выдает пользователю скин/футболку 'молодой' и автоматически надевает его"""
+    acc_id = ensure_molodoy_accessory_in_db()
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1 FROM user_items WHERE user_id = ? AND accessory_id = ?', (user_id, acc_id))
+    if not cursor.fetchone():
+        cursor.execute('INSERT INTO user_items (user_id, accessory_id) VALUES (?, ?)', (user_id, acc_id))
+    conn.commit()
+    conn.close()
+    
+    # Автоматически надеваем
+    equip_accessory(user_id, acc_id)
+    clear_character_cache(user_id)
+    return acc_id
+
+def give_user_gun_accessory(user_id):
+    """Выдает пользователю эксклюзивный аксессуар пистолет и надевает его"""
+    gun_id = ensure_gun_accessory_in_db()
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('SELECT 1 FROM user_items WHERE user_id = ? AND accessory_id = ?', (user_id, gun_id))
+    if not cursor.fetchone():
+        cursor.execute('INSERT INTO user_items (user_id, accessory_id) VALUES (?, ?)', (user_id, gun_id))
+    conn.commit()
+    conn.close()
+    
+    # Автоматически надеваем аксессуар в руку
+    equip_accessory(user_id, gun_id)
+    clear_character_cache(user_id)
+    return gun_id
+
 # Проверка, купил ли пользователь аксессуар
 def has_accessory(user_id, accessory_id):
     """Проверяет, купил ли пользователь конкретный аксессуар"""
@@ -216,6 +341,8 @@ def buy_accessory(user_id, accessory_id):
         ''', (user_id, accessory_id))
         
         conn.commit()
+        from registration import log_financial_transaction
+        log_financial_transaction(user_id, "buy_accessory", -price, f"покупка аксессуара '{acc_name}'")
         
         # АВТОМАТИЧЕСКИ НАДЕВАЕМ АКСЕССУАР
         success_equip, msg_equip = equip_accessory(user_id, accessory_id)
@@ -501,12 +628,26 @@ def buy_background(user_id, background_id):
             VALUES (?, ?)
         ''', (user_id, background_id))
         
+        # Автоматически применяем купленный фон и отключаем дом как фон
+        cursor.execute('SELECT 1 FROM user_equipped WHERE user_id = ?', (user_id,))
+        if cursor.fetchone():
+            cursor.execute('UPDATE user_equipped SET background_accessory = ? WHERE user_id = ?', (background_id, user_id))
+        else:
+            cursor.execute('INSERT INTO user_equipped (user_id, background_accessory) VALUES (?, ?)', (user_id, background_id))
+        
+        try:
+            cursor.execute('UPDATE user_homes SET use_as_background = FALSE WHERE user_id = ?', (user_id,))
+        except Exception:
+            pass
+        
         conn.commit()
+        from registration import log_financial_transaction
+        log_financial_transaction(user_id, "buy_background", -price, f"покупка фона")
         
         # Очищаем кэш персонажа при покупке фона
         clear_character_cache(user_id)
         
-        return True, f"✅ фон куплен! потрачено {format_money(price)}"
+        return True, f"✅ фон куплен и применен! потрачено {format_money(price)}"
     except Exception as e:
         logger.error(f"Ошибка при покупке фона: {e}")
         return False, "⚠️ ошибка при покупке"
@@ -524,12 +665,17 @@ def set_active_background(user_id, background_id):
         if not has_background(user_id, background_id):
             return False, "❌ ты не купил этот фон"
         
-        # Обновляем фон в таблице user_equipped
+        # Обновляем фон в таблице user_equipped и отключаем дом как фон
         cursor.execute('SELECT 1 FROM user_equipped WHERE user_id = ?', (user_id,))
         if cursor.fetchone():
             cursor.execute('UPDATE user_equipped SET background_accessory = ? WHERE user_id = ?', (background_id, user_id))
         else:
             cursor.execute('INSERT INTO user_equipped (user_id, background_accessory) VALUES (?, ?)', (user_id, background_id))
+        
+        try:
+            cursor.execute('UPDATE user_homes SET use_as_background = FALSE WHERE user_id = ?', (user_id,))
+        except Exception:
+            pass
         
         conn.commit()
         
@@ -566,17 +712,24 @@ def get_user_background(user_id):
 
 # Получение активного скина пользователя
 def get_user_skin(user_id):
-    """Получает активный скин пользователя"""
-    # Если не в кэше, загружаем из БД
+    """Получает активный скин пользователя с учетом выбора цвета в таблице users"""
     conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('SELECT image_file FROM skins WHERE skin_id = (SELECT skin_id FROM user_skin WHERE user_id = ?)', (user_id,))
     result = cursor.fetchone()
+    if result and result[0] and os.path.exists(result[0]):
+        conn.close()
+        return result[0]
+        
+    # Проверяем выбранный цвет кожи в таблице users
+    cursor.execute('SELECT color FROM users WHERE user_id = ?', (user_id,))
+    user_row = cursor.fetchone()
     conn.close()
     
-    # Возвращаем скин или дефолт
-    return result[0] if result else 'images/character_black.jpg'
+    if user_row and user_row[0] == "white":
+        return 'images/character_white.jpg'
+    return 'images/character_black.jpg'
 
 # Получение имени активного скина пользователя
 def get_user_skin_name(user_id):
@@ -615,13 +768,71 @@ def set_user_skin(user_id, skin_id):
     finally:
         conn.close()
 
+def get_skin_id_by_image(image_file: str):
+    """Получает ID скина по пути к изображению"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT skin_id FROM skins WHERE image_file = ?', (image_file,))
+        res = cursor.fetchone()
+        return res[0] if res else None
+    except Exception as e:
+        logger.error(f"Error get_skin_id_by_image: {e}")
+        return None
+    finally:
+        conn.close()
+
+def get_user_owned_skins(user_id: int):
+    """Получает список доступных скинов пользователя (дефолтные + купленные/разблокированные)"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    skins = []
+    try:
+        # Стандартные скины (черный и белый)
+        cursor.execute('SELECT skin_id, name, description, image_file FROM skins WHERE image_file IN ("images/character_black.jpg", "images/character_white.jpg")')
+        skins.extend(cursor.fetchall())
+        
+        # Скины, находящиеся в таблице user_skins
+        cursor.execute('''
+            SELECT s.skin_id, s.name, s.description, s.image_file
+            FROM skins s
+            JOIN user_skins us ON s.skin_id = us.skin_id
+            WHERE us.user_id = ?
+        ''', (user_id,))
+        for row in cursor.fetchall():
+            if not any(s[0] == row[0] for s in skins):
+                skins.append(row)
+    except Exception as e:
+        logger.error(f"Error fetching owned skins for {user_id}: {e}")
+    finally:
+        conn.close()
+    return skins
+
+def unequip_user_skin(user_id: int):
+    """Снимает уникальный скин пользователя и сбрасывает к дефолтному"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('DELETE FROM user_skin WHERE user_id = ?', (user_id,))
+        conn.commit()
+        clear_character_cache(user_id)
+        return True
+    except Exception as e:
+        logger.error(f"Error unequipping skin for {user_id}: {e}")
+        return False
+    finally:
+        conn.close()
+
 # ==========================================# 🎨 ОТОБРАЖЕНИЕ ПЕРСОНАЖА С АКСЕССУАРАМИ
 # ==========================================
 
-def create_character_with_accessories(user_id, output_file='temp/temp_character.png'):
+def create_character_with_accessories(user_id, output_file=None):
     """Создает изображение персонажа с фоном и аксессуарами"""
     if not PIL_AVAILABLE:
         return None
+        
+    if not output_file:
+        output_file = f'temp/temp_char_{user_id}.png'
     
     try:
         # Обеспечиваем наличие папки temp
@@ -642,11 +853,23 @@ def create_character_with_accessories(user_id, output_file='temp/temp_character.
         accessory_ids = []
         if equipped_result:
             bg_id = equipped_result[0]
-            accessory_ids = [equipped_result[1], equipped_result[2], equipped_result[3], equipped_result[4]]
+            # Порядок наложения слоев: body (одежда/скин) -> head -> feet -> hand (пистолет поверх всего)
+            accessory_ids = [equipped_result[3], equipped_result[1], equipped_result[4], equipped_result[2]]
         
         bg_file = None
-        # Загружаем файл фона если нужен
-        if bg_id:
+        # 1. Проверяем, включен ли ДОМ как фон (он имеет приоритет, если пользователь включил опцию 'дом как фон')
+        try:
+            from homes import get_home_for_user_or_roommate, HOMES
+            home_info = get_home_for_user_or_roommate(user_id)
+            if home_info and home_info[3]:  # use_as_background == True
+                home_cfg = next((h for h in HOMES if h['id'] == home_info[1]), None)
+                if home_cfg and os.path.exists(home_cfg['image_file']):
+                    bg_file = home_cfg['image_file']
+        except Exception:
+            pass
+
+        # 2. Если дом как фон НЕ включен, но надежен обычный фон из магазина
+        if not bg_file and bg_id:
             cursor.execute('SELECT image_file FROM backgrounds WHERE background_id = ?', (bg_id,))
             bg_result = cursor.fetchone()
             if bg_result:
@@ -959,6 +1182,7 @@ def create_background_preview(user_id, background_id, output_file='temp/temp_bac
 
 async def show_shop_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Главное меню магазина"""
+    await maybe_send_channel_reminder(update, context)
     user_id = update.effective_user.id
     user = get_user(user_id)
     
@@ -987,18 +1211,20 @@ async def show_shop_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='html')
+            await update.callback_query.message.reply_text("⚠️ <b>данный раздел требует доработки (аксессуары), поэтому покупка их временно ограничена!</b>", parse_mode='HTML')
         elif update.message:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='html')
+            await update.message.reply_text("⚠️ <b>данный раздел требует доработки (аксессуары), поэтому покупка их временно ограничена!</b>", parse_mode='HTML')
     except Exception:
         pass
 
 async def _show_accessory_carousel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает карусель аксессуаров"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    if not user:
-        return
+    """Показывает карусель аксессуаров (магазин временно закрыт)"""
+    if update.callback_query:
+        await update.callback_query.answer("⚠️ магазин аксессуаров временно недоступен!", show_alert=True)
+    elif update.message:
+        await update.message.reply_text("⚠️ <b>магазин аксессуаров временно недоступен!</b>", parse_mode='HTML')
+    return
     
     money = user[5]
     accessories = get_all_accessories()
@@ -1348,13 +1574,12 @@ async def show_wardrobe_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         pass
 
 async def show_accessories_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает магазин аксессуаров (категорийный выбор)"""
-    user_id = update.effective_user.id
-    user = get_user(user_id)
-    
-    if not user:
-        await update.callback_query.answer("❌ пользователь не найден", show_alert=True)
-        return
+    """Показывает магазин аксессуаров (магазин временно закрыт)"""
+    if update.callback_query:
+        await update.callback_query.answer("⚠️ магазин аксессуаров временно недоступен!", show_alert=True)
+    elif update.message:
+        await update.message.reply_text("⚠️ <b>магазин аксессуаров временно недоступен!</b>", parse_mode='HTML')
+    return
     
     money = user[5]
     accessories = get_all_accessories()
@@ -1550,12 +1775,16 @@ async def handle_shop_toggle_background(update: Update, context: ContextTypes.DE
                 cursor.execute('INSERT INTO user_equipped (user_id, background_accessory) VALUES (?, NULL)', (user_id,))
             message = "✅ фон убран"
         else:
-            # Применяем фон
+            # Применяем фон и отключаем дом как фон
             cursor.execute('SELECT 1 FROM user_equipped WHERE user_id = ?', (user_id,))
             if cursor.fetchone():
                 cursor.execute('UPDATE user_equipped SET background_accessory = ? WHERE user_id = ?', (background_id, user_id))
             else:
                 cursor.execute('INSERT INTO user_equipped (user_id, background_accessory) VALUES (?, ?)', (user_id, background_id))
+            try:
+                cursor.execute('UPDATE user_homes SET use_as_background = FALSE WHERE user_id = ?', (user_id,))
+            except Exception:
+                pass
             message = "✅ фон применен"
         
         conn.commit()

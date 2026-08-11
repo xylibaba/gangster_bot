@@ -253,13 +253,6 @@ async def update_cleaning_time_manual(update: Update, context: ContextTypes.DEFA
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
-    # Удаляем предыдущее сообщение
-    old_message_id = context.user_data.get('cleaning_message_id')
-    old_chat_id = context.user_data.get('cleaning_chat_id')
-    
-    if old_message_id and old_chat_id:
-        await safe_delete_message(context, old_chat_id, old_message_id)
-    
     # Отправляем новое сообщение с обновленным временем
     new_message = await safe_send_message(
         update=update,
@@ -272,12 +265,6 @@ async def update_cleaning_time_manual(update: Update, context: ContextTypes.DEFA
     if new_message:
         context.user_data['cleaning_message_id'] = new_message.message_id
         context.user_data['cleaning_chat_id'] = new_message.chat_id
-    
-    # Удаляем сообщение с кнопкой "обновить время"
-    try:
-        await update.message.delete()
-    except:
-        pass
 
 # Завершение чистки говна
 async def finish_shit_cleaning(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -298,13 +285,15 @@ async def finish_shit_cleaning(update: Update, context: ContextTypes.DEFAULT_TYP
     duration = context.user_data.get('cleaning_duration', 0)
     salary = calculate_cleaning_salary(duration)
     
-    # Проверяем подписку гангстер плюс
-    is_gangster_plus = user[18] if len(user) > 18 else False
-    if is_gangster_plus:
-        salary *= 4
+    # Применяем общий множитель заработка (Гангстер Плюс x4, Буст x2)
+    from registration import get_user_earnings_multiplier
+    multiplier = get_user_earnings_multiplier(user_id)
+    salary = int(salary * multiplier)
     
     # Обновляем статистику
     update_user_stats(user_id, shit_cleaned=1, money_earned=salary)
+    from registration import log_financial_transaction
+    log_financial_transaction(user_id, "job_salary", salary, "зарплата: очистка говна")
     
     nickname = user[2]
     user_id_val = user[0]
@@ -315,7 +304,7 @@ async def finish_shit_cleaning(update: Update, context: ContextTypes.DEFAULT_TYP
     # Форматируем время работы
     time_worked = format_time(duration)
     
-    bonus_text = " (x4 гангстер плюс)" if is_gangster_plus else ""
+    bonus_text = f" (бонус х{int(multiplier)})" if multiplier > 1.0 else ""
     
     message_text = f"✅ <b>{profile_link}</b>, ты успешно почистил говно!\n\n💰 заработано: <b>{format_money(salary)}</b>{bonus_text}\n⏰ время работы: <b>{time_worked}</b>\n💩 почищено говна: +1"
     

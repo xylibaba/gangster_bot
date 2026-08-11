@@ -11,10 +11,11 @@ import os
 import time
 import httpx
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, LabeledPrice
 from telegram.ext import ContextTypes
 from registration import get_user, update_user_money
-from utils import safe_delete_message, format_money
+from utils import safe_delete_message, format_money, maybe_send_channel_reminder
+from scam import add_referral_donation_earnings
 
 # загружаем переменные окружения
 load_dotenv()
@@ -43,24 +44,24 @@ crypto_bot_token = os.getenv("CRYPTO_BOT_TOKEN", "")
 # конфигурация наборов
 packs = [
     {
-        "id": "starter_pack",
-        "title": "📦 начальный набор",
-        "description": "• 1.000.000$\n• отличный старт для новичка!",
-        "price_stars": 1,
+        "id": "molodoy",
+        "title": "📦 молодой",
+        "description": "• 👕 скин «молодой» (одевается сразу, снимается дома)\n• 💰 10.000.000$\n• ⚡️ х2 со всего заработка на 24 часа",
+        "price_stars": 44,
         "price_crypto": 1.0,
-        "reward_money": 1000000,
+        "reward_money": 10000000,
         "is_subscription": False,
-        "photo": "images/registration.jpg" # используем существующее фото как заглушку
+        "photo": "images/donation_1.jpg"
     },
     {
         "id": "gangster_plus",
         "title": "💎 гангстер плюс",
-        "description": "• отдельный чат с админами\n• х4 прибыль с работ\n• алмаз 💎 около ника",
-        "price_stars": 1,
-        "price_crypto": 0.01,
+        "description": "• 💬 VIP-чат с админами\n• ⚡️ х4 прибыль со всех работ\n• 💎 алмаз около ника\n• 💰 5.000.000$ каждую неделю (автоматически)\n\n💡 <i>наполнение подписки будет меняться в лучшую сторону!</i>\n✨ <i>все действует пока активна подписка (1 месяц)</i>",
+        "price_stars": 65,
+        "price_crypto": 1.5,
         "reward_money": 0,
         "is_subscription": True,
-        "photo": "images/registration.jpg" # используем существующее фото как заглушку
+        "photo": "images/donation_2.jpg"
     }
 ]
 
@@ -70,11 +71,34 @@ def get_main_admin_chat_link():
 
 # меню донатов (карусель)
 async def show_donation_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await maybe_send_channel_reminder(update, context)
     user_id = update.effective_user.id
     
     # по умолчанию первый набор
     current_pack_index = 0
     context.user_data['current_pack_index'] = current_pack_index
+    context.user_data['in_donation_menu'] = True
+    
+    # Reply клавиатура доната: кнопки "🎁 промокод" и "назад"
+    reply_keyboard = [
+        [KeyboardButton("🎁 промокод"), KeyboardButton("назад")]
+    ]
+    reply_markup_reply = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+    
+    chat_id = update.effective_chat.id if update and update.effective_chat else user_id
+    if update.message:
+        await update.message.reply_text(
+            "💎 <b>раздел доната</b>",
+            parse_mode='HTML',
+            reply_markup=reply_markup_reply
+        )
+    elif update.callback_query:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="💎 <b>раздел доната</b>",
+            parse_mode='HTML',
+            reply_markup=reply_markup_reply
+        )
     
     await show_pack(update, context, current_pack_index)
 
@@ -104,7 +128,6 @@ async def show_pack(update: Update, context: ContextTypes.DEFAULT_TYPE, index: i
     if has_plus:
         keyboard.append([InlineKeyboardButton("💬 VIP-чат с админами", url=get_main_admin_chat_link())])
 
-    keyboard.append([InlineKeyboardButton("назад", callback_data="main_menu")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     if update.callback_query:
@@ -455,33 +478,8 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
                 index = int(payload.split("_")[-1])
                 if 0 <= index < len(packs):
                     pack = packs[index]
-                    user = get_user(user_id)
-                    user_name = user[2] if user and len(user) > 2 else "игрок"
-                    
-                    if pack['is_subscription']:
-                        result = activate_gangster_plus(user_id)
-                        if result:
-                            success_msg = (
-                                f"✅ <b>покупка успешна!</b>\n\n"
-                                f"<b>{pack['title']}</b> активирован!\n"
-                                f"теперь у вас:\n"
-                                f"• x3 заработок на работах\n"
-                                f"• 💎 алмаз около ника\n\n"
-                                f"спасибо за поддержку бота!"
-                            )
-                            await update.message.reply_text(success_msg, parse_mode='html')
-                        else:
-                            await update.message.reply_text("⚠️ ошибка активации подписки")
-                    else:
-                        reward = pack['reward_money']
-                        update_user_money(user_id, reward)
-                        success_msg = (
-                            f"✅ <b>покупка успешна!</b>\n\n"
-                            f"<b>{pack['title']}</b>\n"
-                            f"вам начислено: <b>{format_money(reward)}</b>\n\n"
-                            f"спасибо за поддержку бота!"
-                        )
-                        await update.message.reply_text(success_msg, parse_mode='html')
+                    success_msg = await apply_pack_rewards(user_id, index)
+                    await update.message.reply_text(success_msg, parse_mode='html')
                     
                     # Определяем payment_system
                     payment_system = "telegram_stars" if currency.upper() == "XTR" else "crypto_bot"
@@ -599,6 +597,68 @@ async def check_crypto_payment_status(user_id: int, invoice_id: str, pack_index:
         logger.error(f"Error checking crypto payment: {e}", exc_info=True)
         return False
 
+async def apply_pack_rewards(user_id: int, pack_index: int) -> str:
+    """Выдает все награды за покупку пакета и возвращает текст успеха"""
+    if not (0 <= pack_index < len(packs)):
+        return "⚠️ Неизвестный пакет"
+    
+    pack = packs[pack_index]
+    
+    if pack['is_subscription']:
+        activate_gangster_plus(user_id)
+        now = time.time()
+        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        try:
+            cursor.execute('SELECT gangster_plus_until FROM users WHERE user_id = ?', (user_id,))
+            res = cursor.fetchone()
+            current_until = res[0] if res and res[0] else 0.0
+            new_until = max(now, current_until) + (30 * 86400)
+            
+            # Выдаем 5кк бонус при покупке и обновляем таймеры
+            update_user_money(user_id, 5000000)
+            cursor.execute('UPDATE users SET gangster_plus_until = ?, last_plus_weekly_payout = ? WHERE user_id = ?', (new_until, now, user_id))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Error setting gangster_plus subscription time: {e}")
+        finally:
+            conn.close()
+
+        return (
+            f"✅ <b>покупка успешна!</b>\n\n"
+            f"<b>{pack['title']}</b> подписка активирована на 30 дней!\n\n"
+            f"вам доступно:\n"
+            f"• 💬 VIP-чат с админами\n"
+            f"• ⚡️ х4 прибыль на работах\n"
+            f"• 💎 алмаз около ника\n"
+            f"• 💰 5.000.000$ (первый еженедельный бонус начислен!)\n\n"
+            f"<i>💡 наполнение подписки будет меняться в лучшую сторону!</i>\n"
+            f"спасибо за поддержку бота!"
+        )
+    else:
+        # Набор Молодой (pack_index == 0)
+        reward = pack['reward_money']
+        update_user_money(user_id, reward)
+        await add_referral_donation_earnings(user_id, reward)
+        
+        # Выдаем и автоматически одеваем скин молодой
+        from accessories import give_user_molodoy_accessory
+        from registration import add_user_2x_boost
+        
+        give_user_molodoy_accessory(user_id)
+            
+        # Активируем х2 со всего заработка на 24 часа
+        add_user_2x_boost(user_id, 86400)
+        
+        return (
+            f"✅ <b>покупка успешна!</b>\n\n"
+            f"<b>{pack['title']}</b>\n"
+            f"• начислено: <b>{format_money(reward)}</b>\n"
+            f"• выдан и автоматически надет скин <b>«молодой»</b> (снимается в шкафу дома)!\n"
+            f"• ⚡️ <b>х2 со всего заработка</b> активирован на 24 часа!\n\n"
+            f"спасибо за поддержку бота!"
+        )
+
 async def process_payment(user_id: int, pack_index: int, amount_paid: float, currency: str, bot=None, chat_id=None, message_id=None):
     """Обрабатывает платеж и активирует пакет"""
     try:
@@ -607,15 +667,7 @@ async def process_payment(user_id: int, pack_index: int, amount_paid: float, cur
             return False
         
         pack = packs[pack_index]
-        
-        if pack['is_subscription']:
-            result = activate_gangster_plus(user_id)
-            if result:
-                logger.info(f"Gangster plus activated for user {user_id}")
-        else:
-            reward = pack['reward_money']
-            update_user_money(user_id, reward)
-            logger.info(f"Money added for user {user_id}: {reward}")
+        success_msg = await apply_pack_rewards(user_id, pack_index)
         
         add_donation(user_id, int(amount_paid * 100), currency, "crypto_bot", "completed")
         logger.info(f"Payment processed: user={user_id}, pack={pack_index}")
@@ -623,13 +675,6 @@ async def process_payment(user_id: int, pack_index: int, amount_paid: float, cur
         # Отправляем уведомление о успешном платеже пользователю
         if bot and chat_id:
             try:
-                success_msg = (
-                    f"✅ <b>покупка успешна!</b>\n\n"
-                    f"<b>{pack['title']}</b>\n"
-                    f"вам начислено: <b>{format_money(pack['reward_money'])}</b>\n\n"
-                    f"спасибо за поддержку бота!"
-                )
-                
                 if message_id:
                     # Обновляем сообщение со счетом
                     try:
@@ -748,9 +793,168 @@ async def check_all_pending_crypto_payments(context: ContextTypes.DEFAULT_TYPE):
                 else:
                     # Платеж еще не прошел - обновляем счетчик проверок
                     pending_crypto_payments[user_id][pack_index]['check_count'] = check_count + 1
-            
             except Exception as e:
-                logger.error(f"Error checking payment for user {user_id}, invoice {invoice_id}: {e}")
+                logger.error(f"Error checking crypto payment for user {user_id}: {e}")
+
+# ==========================================
+# СИСТЕМА ПРОМОКОДОВ
+# ==========================================
+
+def init_promocodes_db():
+    """Инициализация таблиц БД для промокодов"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS promocodes (
+            code TEXT PRIMARY KEY,
+            reward_type TEXT NOT NULL,
+            reward_value INTEGER NOT NULL,
+            max_uses INTEGER DEFAULT 0,
+            uses_count INTEGER DEFAULT 0
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_promocodes (
+            user_id INTEGER,
+            code TEXT,
+            activated_at REAL,
+            PRIMARY KEY (user_id, code)
+        )
+    ''')
+    # Заполняем стартовыми промокодами при пустой БД
+    cursor.execute("SELECT COUNT(*) FROM promocodes")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute("INSERT INTO promocodes (code, reward_type, reward_value) VALUES ('GANGSTER', 'money', 50000)")
+        cursor.execute("INSERT INTO promocodes (code, reward_type, reward_value) VALUES ('START', 'money', 25000)")
+        cursor.execute("INSERT INTO promocodes (code, reward_type, reward_value) VALUES ('BONUS', 'money', 100000)")
     
-    # Удаляем пользователей без ожидающих платежей
-    pending_crypto_payments = {uid: pkgs for uid, pkgs in pending_crypto_payments.items() if pkgs}
+    # Всегда гарантируем наличие 3 эксклюзивных одноразовых промокодов на пистолет
+    tester_codes = ['TESTER-GUN-777', 'BETA-PISTOLET-2026', 'GANGSTER-EXCLUSIVE-999']
+    for code in tester_codes:
+        cursor.execute("INSERT OR IGNORE INTO promocodes (code, reward_type, reward_value, max_uses, uses_count) VALUES (?, 'gun_accessory', 1, 1, 0)", (code,))
+    conn.commit()
+    conn.close()
+
+def activate_promocode(user_id: int, code_str: str) -> tuple[bool, str]:
+    """Активирует промокод для пользователя"""
+    init_promocodes_db()
+    code_str = code_str.strip().upper()
+    
+    if not code_str:
+        return False, "❌ введите промокод!"
+        
+    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    cursor = conn.cursor()
+    
+    try:
+        cursor.execute("SELECT reward_type, reward_value, max_uses, uses_count FROM promocodes WHERE UPPER(code) = ?", (code_str,))
+        promo = cursor.fetchone()
+        
+        if not promo:
+            conn.close()
+            return False, "❌ такой промокод не найден или истек!"
+            
+        reward_type, reward_value, max_uses, uses_count = promo
+        
+        if max_uses > 0 and uses_count >= max_uses:
+            conn.close()
+            return False, "❌ этот промокод больше недействителен (закончились активации)!"
+            
+        cursor.execute("SELECT 1 FROM user_promocodes WHERE user_id = ? AND UPPER(code) = ?", (user_id, code_str))
+        if cursor.fetchone():
+            conn.close()
+            return False, "❌ вы уже активировали этот промокод!"
+            
+        current_time = time.time()
+        cursor.execute("INSERT INTO user_promocodes (user_id, code, activated_at) VALUES (?, ?, ?)", (user_id, code_str, current_time))
+        cursor.execute("UPDATE promocodes SET uses_count = uses_count + 1 WHERE UPPER(code) = ?", (code_str,))
+        conn.commit()
+        conn.close()
+        
+        if reward_type == 'money':
+            update_user_money(user_id, reward_value)
+            msg = f"✅ промокод <b>{code_str}</b> успешно активирован!\n\n💰 начислено: <b>{format_money(reward_value)}</b>"
+        elif reward_type == 'coins':
+            from registration import update_admin_currency
+            update_admin_currency(user_id, reward_value)
+            msg = f"✅ промокод <b>{code_str}</b> успешно активирован!\n\n💎 начислено: <b>{reward_value} админ-коинов</b>"
+        elif reward_type == 'gangster_plus':
+            from registration import update_user_field
+            update_user_field(user_id, 'is_gangster_plus', True)
+            msg = f"✅ промокод <b>{code_str}</b> успешно активирован!\n\n⭐️ вам активирована подписка <b>Гангстер Плюс</b>!"
+        elif reward_type == 'gun_accessory':
+            from accessories import give_user_gun_accessory
+            give_user_gun_accessory(user_id)
+            msg = f"✅ эксклюзивный промокод <b>{code_str}</b> активирован!\n\n🔫 вам выдан и надет эксклюзивный аксессуар: <b>пистолет</b>!\nуправлять им можно в меню ⚙️ Настройки."
+        else:
+            update_user_money(user_id, reward_value)
+            msg = f"✅ промокод <b>{code_str}</b> успешно активирован!"
+            
+        return True, msg
+    except Exception as e:
+        logger.error(f"Ошибка активации промокода: {e}")
+        return False, f"❌ ошибка активации промокода: {e}"
+
+async def prompt_promocode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запрашивает у пользователя ввод промокода"""
+    context.user_data['waiting_for_promocode'] = True
+    reply_keyboard = [
+        [KeyboardButton("🎁 промокод"), KeyboardButton("назад")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
+    await update.message.reply_text(
+        "🎟️ <b>введите промокод:</b>\n\nнапишите ваш промокод сообщением в чат.",
+        parse_mode='HTML',
+        reply_markup=reply_markup
+    )
+
+async def process_gangster_plus_weekly_payouts(context: ContextTypes.DEFAULT_TYPE):
+    """Фоновая задача для выдачи 5кк каждую неделю подписчикам Гангстер Плюс и проверки срока подписок"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        now = time.time()
+        cursor.execute('''
+            SELECT user_id, gangster_plus_until, last_plus_weekly_payout 
+            FROM users 
+            WHERE is_gangster_plus = TRUE
+        ''')
+        rows = cursor.fetchall()
+        
+        for user_id, plus_until, last_payout in rows:
+            plus_until = plus_until or 0.0
+            last_payout = last_payout or 0.0
+            
+            # Проверяем не истекла ли подписка
+            if plus_until > 0.0 and now > plus_until:
+                cursor.execute('UPDATE users SET is_gangster_plus = FALSE WHERE user_id = ?', (user_id,))
+                conn.commit()
+                logger.info(f"Gangster plus expired for user {user_id}")
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="⚠️ <b>срок действия подписки Гангстер Плюс истек!</b>\n\nпродлите подписку в меню доната 💎",
+                        parse_mode='html'
+                    )
+                except Exception:
+                    pass
+                continue
+            
+            # Проверяем, прошло ли 7 дней (604800 сек) с последней выплаты
+            if last_payout > 0.0 and (now - last_payout >= 604800):
+                update_user_money(user_id, 5000000)
+                cursor.execute('UPDATE users SET last_plus_weekly_payout = ? WHERE user_id = ?', (now, user_id))
+                conn.commit()
+                logger.info(f"Weekly 5kk gangster plus payout sent to user {user_id}")
+                try:
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="🎉 <b>еженедельный бонус Гангстер Плюс!</b>\n\nвам зачислено: <b>5.000.000$</b> 💎",
+                        parse_mode='html'
+                    )
+                except Exception:
+                    pass
+    except Exception as e:
+        logger.error(f"Error in process_gangster_plus_weekly_payouts: {e}")
+    finally:
+        conn.close()

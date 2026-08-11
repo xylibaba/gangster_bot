@@ -2,6 +2,7 @@ import logging
 import sys
 import sqlite3
 import asyncio
+import datetime
 
 if sys.platform == "win32":
     try:
@@ -30,10 +31,11 @@ from registration import (
     update_user_stats, update_user_name, update_user_color, update_user_gender, is_nickname_valid,
     update_user_disable_transfer_confirmation, update_user_disable_transfer_notifications,
     update_user_disable_news_notifications, update_user_disable_system_notifications,
+    update_user_disable_referral_notifications, is_referral_notifications_disabled,
     get_news_subscribed_user_ids,
-    get_user_activity_logs, is_admin
+    get_user_activity_logs, log_financial_transaction, is_admin
 )
-from utils import safe_delete_message, format_money, parse_amount
+from utils import safe_delete_message, format_money, parse_amount, set_global_bot
 
 from main_menu import show_main_menu, show_work_menu, show_user_profile, refresh_main_menu, create_profile_text, create_admin_keyboard, show_settings, show_main_settings, show_color_selection, show_gender_selection, show_notifications_settings, show_top_balance
 from shit_cleaner import show_shit_cleaner_menu, start_shit_cleaning, update_cleaning_time_manual, cancel_cleaning, show_cleaning_progress, is_cleaning_in_progress
@@ -44,12 +46,14 @@ from donations import (
     show_donation_menu, pre_checkout_handler,
     successful_payment_handler,
     handle_pack_navigation, handle_buy_pack_selection, start_pack_stars_payment, start_pack_crypto_payment,
-    handle_back_to_packs, check_payment_command, check_all_pending_crypto_payments
+    handle_back_to_packs, check_payment_command, check_all_pending_crypto_payments,
+    prompt_promocode, activate_promocode, process_gangster_plus_weekly_payouts
 )
 from accessories import (init_accessories_and_backgrounds, show_wardrobe_menu, show_accessories_shop, show_backgrounds_shop,
                          show_shop_main, handle_shop_accessories_start, handle_shop_backgrounds_start, handle_shop_menu,
                          handle_shop_acc_nav, handle_shop_bg_nav, handle_shop_buy_accessory, handle_shop_buy_background, 
-                         handle_shop_toggle_accessory, handle_shop_toggle_background, clear_character_cache)
+                         handle_shop_toggle_accessory, handle_shop_toggle_background, clear_character_cache,
+                         get_accessory_id_by_name, is_accessory_equipped, equip_accessory, unequip_accessory)
 import homes
 import business
 
@@ -138,16 +142,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 <b>экономика:</b>
 /pay @username сумма - перевести деньги другому игроку
 
+🎧 <b>поддержка пользователей:</b>
+если у тебя возник вопрос или проблема, напиши в бота поддержки: @gangstasupport_bot
+
 💡 <b>совет:</b> используй кнопки в меню для удобной навигации!"""
 
     # создаем клавиатуру
-    keyboard = []
+    keyboard = [
+        [InlineKeyboardButton("🎧 связаться с поддержкой", url="https://t.me/gangstasupport_bot")]
+    ]
     
     # если пользователь админ, добавляем кнопку админ команд
     if is_admin(user_id):
         keyboard.append([InlineKeyboardButton("🔐 команды админов", callback_data="help_admin_commands")])
     
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(help_text, parse_mode='HTML', reply_markup=reply_markup)
 
@@ -257,14 +266,7 @@ async def profile_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ пользователь не найден!")
         return
     
-    # 🔒 защита: проверяем, не является ли целевой пользователь главным админом
-    # Но если сам смотрящий админ, то просмотр разрешен (но огранич)
-    is_target_main_admin = target_user[7] if len(target_user) > 7 else False
     is_viewer_admin = is_admin(user_id)
-    
-    if is_target_main_admin and not is_viewer_admin:
-        await update.message.reply_text("❌ профиль главного админа виден только для администраторов!")
-        return
     
     # логируем действие админа если это админ
     if is_viewer_admin:
@@ -386,9 +388,9 @@ async def show_user_activity_logs(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     user_id = query.from_user.id
     
-    # Проверяем права
-    if not is_admin(user_id):
-        await query.answer("❌ доступ запрещен!", show_alert=True)
+    # 🔒 Проверяем права: логи доступны ТОЛЬКО главному админу
+    if not is_main_admin(user_id):
+        await query.answer("❌ просмотр логов доступен только главному админу!", show_alert=True)
         return
     
     target_user = get_user(target_user_id)
@@ -398,26 +400,35 @@ async def show_user_activity_logs(update: Update, context: ContextTypes.DEFAULT_
     
     nickname = target_user[2] if len(target_user) > 2 else "неизвестно"
     
-    # Получаем логи активности
-    logs = get_user_activity_logs(target_user_id, limit=15)
+    # Получаем финансовые логи активности за 7 дней
+    logs = get_user_activity_logs(target_user_id, limit=35)
     
     if not logs:
-        message_text = f"📋 <b>логи активности {nickname}</b>\n\n🔍 нет записей о активности"
+        message_text = f"📋 <b>логи активности {nickname} (за 7 дней)</b>\n\n🔍 нет записей о финансовых операциях за прошлую неделю"
     else:
-        message_text = f"📋 <b>логи активности {nickname}</b>\n\n"
+        message_text = f"📋 <b>логи активности {nickname} (за 7 дней)</b>\n\n"
         for log in logs:
-            from_id, to_id, amount, transfer_date = log
+            action_type, amount, details, timestamp = log
             
-            # Определяем направление
-            if from_id == target_user_id:
-                sender = f"вы отправили"
-                receiver_user = get_user(to_id) if to_id else None
-                receiver_name = receiver_user[2] if receiver_user and len(receiver_user) > 2 else f"id{to_id}"
-                message_text += f"💸 {sender} {format_money(amount)} пользователю {receiver_name}\n"
-            else:
-                sender_user = get_user(from_id) if from_id else None
-                sender_name = sender_user[2] if sender_user and len(sender_user) > 2 else f"id{from_id}"
-                message_text += f"💰 получили {format_money(amount)} от {sender_name}\n"
+            dt = datetime.datetime.fromtimestamp(timestamp)
+            time_str = dt.strftime("%d.%m %H:%M")
+            
+            sign = "+" if amount > 0 else ""
+            amt_str = f" <b>({sign}{format_money(amount)})</b>" if amount != 0 else ""
+            
+            icon = "📊"
+            if "win" in action_type or "salary" in action_type or "earn" in action_type or "give" in action_type:
+                icon = "💰"
+            elif "loss" in action_type or "buy" in action_type:
+                icon = "💸"
+            elif "casino" in action_type:
+                icon = "🎰"
+            elif "transfer" in action_type:
+                icon = "🔄"
+            elif "donation" in action_type:
+                icon = "💎"
+                
+            message_text += f"{icon} <code>[{time_str}]</code> {details}{amt_str}\n"
     
     keyboard = [[InlineKeyboardButton("⬅️ назад", callback_data=f"admin_refresh_{target_user_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -611,6 +622,22 @@ async def handle_admin_actions(update: Update, context: ContextTypes.DEFAULT_TYP
             target_user_id = int(data.replace('admin_toggle_plus_', ''))
             await toggle_gangster_plus(update, context, target_user_id)
         
+        # перевести деньги пользователю
+        elif data.startswith('pay_start_'):
+            target_user_id = int(data.replace('pay_start_', ''))
+            target_user = get_user(target_user_id)
+            if target_user:
+                nickname = target_user[2] if len(target_user) > 2 else "пользователю"
+                username = target_user[1] if len(target_user) > 1 else None
+                cmd_hint = f"/pay @{username} 1000" if username else f"/pay {target_user_id} 1000"
+                msg_text = (
+                    f"💸 <b>перевод средств пользователю {nickname}</b>\n\n"
+                    f"чтобы перевести деньги, отправьте команду в чат:\n"
+                    f"<code>{cmd_hint}</code>"
+                )
+                await query.answer()
+                await context.bot.send_message(chat_id=query.message.chat_id, text=msg_text, parse_mode='HTML')
+        
         else:
             await query.answer("❌ неизвестная команда!", show_alert=True)
             
@@ -644,7 +671,6 @@ async def toggle_gangster_plus(update: Update, context: ContextTypes.DEFAULT_TYP
     conn.commit()
     conn.close()
     
-    from accessories import clear_character_cache
     clear_character_cache(target_user_id)
     
     status_text = "выдана 💎" if new_plus else "забрана ❌"
@@ -693,6 +719,9 @@ async def confirm_transfer_immediate(update: Update, context: ContextTypes.DEFAU
 
         # коммитим транзакцию
         conn.commit()
+
+        log_financial_transaction(user_id, "transfer_send", -amount, f"перевод пользователю {target_user[2]}")
+        log_financial_transaction(target_user[0], "transfer_receive", amount, f"перевод от пользователя {from_user[2]}")
 
         # форматируем суммы
         formatted_amount = format_money(amount)
@@ -1226,6 +1255,96 @@ async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
     
     await update.message.reply_text(f"✅ у пользователя @{target_username} снята админка!")
 
+# команда выдачи доната (только для главного админа, для остальных — неизвестная команда)
+async def donations_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    # проверяем бан - забаненные пользователи игнорируются полностью
+    if is_user_banned(user_id):
+        return
+    
+    # если не главный админ (обычный пользователь или обычный админ) — отвечаем "неизвестная команда"
+    if not is_main_admin(user_id):
+        await unknown_command(update, context)
+        return
+    
+    # проверяем rate limit
+    if not await rate_limit_check(update, context):
+        return
+    
+    args = getattr(context, 'args', None) or []
+    if len(args) < 2:
+        await update.message.reply_text(
+            "👑 <b>выдача доната (Главный Админ)</b>\n\n"
+            "<b>использование:</b>\n"
+            "<code>/donations @username <набор></code>\n"
+            "<code>/donations ID <набор></code>\n\n"
+            "<b>доступные наборы:</b>\n"
+            "• <code>0</code> или <code>molodoy</code> — 📦 <b>молодой</b> (10кк, скин, х2 со всего заработка на 24 часа)\n"
+            "• <code>1</code> или <code>gangster_plus</code> — 💎 <b>гангстер плюс</b> (х4 прибыль, 💎 около ника, 5кк каждую неделю)",
+            parse_mode='HTML'
+        )
+        return
+    
+    target_username = args[0].replace('@', '').strip()
+    target_user = get_user_by_username(target_username)
+    
+    if not target_user:
+        try:
+            target_user_id = int(target_username)
+            target_user = get_user(target_user_id)
+        except ValueError:
+            target_user = get_user_by_name(target_username)
+            
+    if not target_user:
+        await update.message.reply_text("❌ пользователь не найден!")
+        return
+        
+    target_user_id = target_user[0]
+    target_nickname = target_user[2] if len(target_user) > 2 else f"ID {target_user_id}"
+    
+    pack_input = args[1].lower().strip()
+    pack_index = None
+    if pack_input in ['0', 'molodoy', 'молодой']:
+        pack_index = 0
+    elif pack_input in ['1', 'gangster_plus', 'плюс', 'гангстер']:
+        pack_index = 1
+    else:
+        try:
+            idx = int(pack_input)
+            from donations import packs
+            if 0 <= idx < len(packs):
+                pack_index = idx
+        except ValueError:
+            pass
+            
+    if pack_index is None:
+        await update.message.reply_text("❌ неверный набор! используйте 0 (молодой) или 1 (гангстер плюс).")
+        return
+        
+    from donations import apply_pack_rewards, packs
+    pack = packs[pack_index]
+    
+    success_msg = await apply_pack_rewards(target_user_id, pack_index)
+    log_admin_action(user_id, "give_donation", target_user_id, f"выдан донат {pack['title']}")
+    
+    await update.message.reply_text(
+        f"✅ <b>донат успешно выдан!</b>\n\n"
+        f"👤 <b>получатель:</b> <b>{target_nickname}</b> (ID: <code>{target_user_id}</code>)\n"
+        f"🎁 <b>пакет:</b> <b>{pack['title']}</b>",
+        parse_mode='HTML'
+    )
+    
+    # отправляем уведомление получателю
+    try:
+        await context.bot.send_message(
+            chat_id=target_user_id,
+            text=f"🎁 <b>Вам выдан донат от Главного Администратора!</b>\n\n{success_msg}",
+            parse_mode='HTML'
+        )
+    except Exception as e:
+        logger.warning(f"Could not send donation notification to user {target_user_id}: {e}")
+
 # команда рассылки новостей для главного админа
 async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1253,6 +1372,10 @@ async def news_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if reply_msg:
         target_msg_id = reply_msg.message_id
+        raw_text = msg.text or msg.caption or ""
+        clean_text = re.sub(r'^/news(@\w+)?\s*', '', raw_text, flags=re.IGNORECASE).strip()
+        if clean_text:
+            clean_caption = clean_text
     elif msg.photo or msg.video or msg.animation or msg.document or msg.audio or msg.voice:
         target_msg_id = msg.message_id
         raw_caption = msg.caption or ""
@@ -1337,6 +1460,10 @@ async def onews_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if reply_msg:
         target_msg_id = reply_msg.message_id
+        raw_text = msg.text or msg.caption or ""
+        clean_text = re.sub(r'^/onews(@\w+)?\s*', '', raw_text, flags=re.IGNORECASE).strip()
+        if clean_text:
+            clean_caption = clean_text
     elif msg.photo or msg.video or msg.animation or msg.document or msg.audio or msg.voice:
         target_msg_id = msg.message_id
         raw_caption = msg.caption or ""
@@ -1613,6 +1740,7 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         nickname = target_user[2] if target_user and len(target_user) > 2 else "неизвестно"
         
         log_admin_action(user_id, "give_money", target_user_id, f"выдано {format_money(amount)} денег")
+        log_financial_transaction(target_user_id, "admin_give", amount, f"начисление от админа")
         
         if 'admin_giving_money_to' in context.user_data:
             del context.user_data['admin_giving_money_to']
@@ -1639,6 +1767,20 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
             print(f"⚠️ не удалось отправить уведомление пользователю {target_user_id}: {e}")
             
         await show_main_menu(update, context)
+        return
+        
+    if context.user_data.get('waiting_for_promocode'):
+        del context.user_data['waiting_for_promocode']
+        code_input = update.message.text.strip()
+        if code_input.lower() in ['назад', 'отмена', 'cancel']:
+            await show_donation_menu(update, context)
+            return
+        success, msg = activate_promocode(user_id, code_input)
+        await update.message.reply_text(msg, parse_mode='HTML')
+        return
+
+    if context.user_data.get('waiting_for_roommate_invite'):
+        await homes.finish_invite_roommate(update, context, update.message.text.strip())
         return
     
     text = update.message.text.strip().lower()
@@ -1674,13 +1816,7 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
             # нет аргумента - показываем свой профиль
             target_user = get_user(user_id)
         
-        # 🔒 защита: проверяем, не является ли целевой пользователь главным админом
-        is_target_main_admin = target_user[7] if len(target_user) > 7 else False
         is_viewer_admin = is_admin(user_id)
-        
-        if is_target_main_admin and not is_viewer_admin:
-            await update.message.reply_text("❌ профиль главного админа виден только для администраторов!")
-            return
         
         # логируем действие админа если это админ
         if is_viewer_admin and target_user[0] != user_id:
@@ -1692,6 +1828,12 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
     elif text == "назад":
         handled = True
         
+        # если пользователь в разделе доната - вернуться в главное меню
+        if context.user_data.get('in_donation_menu'):
+            del context.user_data['in_donation_menu']
+            await show_main_menu(update, context)
+            return
+
         # если пользователь в магазине аксессуаров - вернуться в меню магазина
         if context.user_data.get('in_accessories_shop'):
             context.user_data['in_accessories_shop'] = False
@@ -1754,35 +1896,47 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         context.user_data['in_backgrounds_shop'] = False
         await show_shop_main(update, context)
         return
-    elif text == "дом":
+    elif text in ["дом", "🏠 дом", "дом ✅"]:
         handled = True
-        await homes.show_homes_shop(update, context)
+        await homes.show_home_menu(update, context)
         return
-    elif text == "бизнес":
+    elif text in ["👕 шкаф", "шкаф"]:
         handled = True
-        await business.show_business_shop(update, context)
+        await homes.show_wardrobe_page(update, context, page=0)
+        return
+    elif text in ["👥 подселение", "подселение"]:
+        handled = True
+        await homes.start_invite_roommate(update, context)
+        return
+    elif text in ["⚙️ настройки дома", "настройки дома"]:
+        handled = True
+        await homes.show_home_settings(update, context)
+        return
+    elif text in ["бизнес", "бизнесы"]:
+        handled = True
+        await update.message.reply_text("⚠️ <b>раздел бизнесы временно недоступен!</b>", parse_mode='HTML')
         return
     elif text in ["донат", "донат ✅"]:
         handled = True
         await show_donation_menu(update, context)
         return
-    elif text == "карта":
+    elif text in ["🎁 промокод", "промокод"]:
         handled = True
-        await update.message.reply_text("🗺️ карта в разработке")
+        await prompt_promocode(update, context)
+        return
+    elif text in ["карта", "🗺️ карта"]:
+        handled = True
+        await update.message.reply_text("⚠️ <b>раздел карта временно недоступен!</b>", parse_mode='HTML')
         return
     elif text in ["помощь", "помощь ✅"]:  # обработка текстовой команды помощи
         handled = True
         await help_command(update, context)
         return
-    elif text in ["топ", "🏆 топ", "топ 🏆"]:
+    elif text in ["топ", "🏆 топ", "топ 🏆", "🏆 топ ✅"]:
         handled = True
         await show_top_balance(update, context)
         return
-    elif text == "⚙️":
-        handled = True
-        await show_settings(update, context)
-        return
-    elif text == "настройки":
+    elif text in ["⚙️", "⚙️ ✅", "настройки"]:
         handled = True
         await show_settings(update, context)
         return
@@ -2304,6 +2458,120 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         except Exception as e:
                             logger.error(f"Ошибка при редактировании предупреждения перевода: {e}")
 
+        # обработка неизвестных кнопок
+        elif data.startswith("shop_"):
+            if data == "shop_menu":
+                await handle_shop_menu(update, context)
+            elif data == "shop_accessories_start":
+                await handle_shop_accessories_start(update, context)
+            elif data == "shop_backgrounds_start":
+                await handle_shop_backgrounds_start(update, context)
+            elif data == "shop_acc_disabled":
+                await update.callback_query.answer()
+            elif data == "shop_acc_prev":
+                await handle_shop_acc_nav(update, context, "prev")
+            elif data == "shop_acc_next":
+                await handle_shop_acc_nav(update, context, "next")
+            elif data in ["shop_acc_status", "shop_bg_disabled"]:
+                await update.callback_query.answer()
+            elif data == "shop_bg_prev":
+                await handle_shop_bg_nav(update, context, "prev")
+            elif data == "shop_bg_next":
+                await handle_shop_bg_nav(update, context, "next")
+            elif data.startswith("shop_acc_buy_"):
+                await handle_shop_buy_accessory(update, context)
+            elif data.startswith("shop_acc_toggle_"):
+                await handle_shop_toggle_accessory(update, context)
+            elif data.startswith("shop_bg_buy_"):
+                await handle_shop_buy_background(update, context)
+            elif data.startswith("shop_bg_toggle_"):
+                await handle_shop_toggle_background(update, context)
+
+        elif data.startswith("wardrobe_"):
+            if data == "wardrobe_menu":
+                await show_wardrobe_menu(update, context)
+            elif data == "wardrobe_accessories":
+                await show_accessories_shop(update, context)
+            elif data == "wardrobe_backgrounds":
+                await show_backgrounds_shop(update, context)
+            elif data == "wardrobe_page_prev":
+                page = context.user_data.get('wardrobe_page', 0) - 1
+                await homes.show_wardrobe_page(update, context, page=page)
+            elif data == "wardrobe_page_next":
+                page = context.user_data.get('wardrobe_page', 0) + 1
+                await homes.show_wardrobe_page(update, context, page=page)
+            elif data == "wardrobe_refresh":
+                await homes.show_wardrobe_page(update, context)
+            elif data.startswith("wardrobe_slot_"):
+                slot_num = int(data.replace("wardrobe_slot_", ""))
+                await homes.handle_slot_click(update, context, slot_num)
+            elif data.startswith("wardrobe_deposit_"):
+                parts = data.split("_")
+                slot_num = int(parts[2])
+                acc_id = int(parts[3])
+                await homes.deposit_accessory_to_slot(update, context, slot_num, acc_id)
+            elif data.startswith("wardrobe_withdraw_"):
+                slot_num = int(data.replace("wardrobe_withdraw_", ""))
+                await homes.withdraw_accessory_from_slot(update, context, slot_num)
+            elif data.startswith("wardrobe_toggle_lock_"):
+                slot_num = int(data.replace("wardrobe_toggle_lock_", ""))
+                await homes.toggle_slot_lock(update, context, slot_num)
+
+        # обработка выбора типа аксессуара
+        elif data.startswith("acc_type_"):
+            from accessories import handle_acc_type_selection
+            await handle_acc_type_selection(update, context)
+        
+        # обработка просмотра аксессуара и его действий
+        elif data.startswith("acc_"):
+            from accessories import handle_acc_view_details, handle_acc_buy, handle_acc_equip
+            if data.startswith("acc_view_"):
+                await handle_acc_view_details(update, context)
+            elif data.startswith("acc_buy_"):
+                await handle_acc_buy(update, context)
+            elif data.startswith("acc_equip_"):
+                await handle_acc_equip(update, context)
+        
+        # обработка просмотра фонов
+        elif data.startswith("bg_"):
+            from accessories import handle_bg_view_selection, handle_bg_buy, handle_bg_toggle
+            if data.startswith("bg_view_"):
+                await handle_bg_view_selection(update, context)
+            elif data.startswith("bg_buy_"):
+                await handle_bg_buy(update, context)
+            elif data.startswith("bg_toggle_"):
+                await handle_bg_toggle(update, context)
+        
+        # обработка домов
+        elif data.startswith("homes_"):
+            if data == "homes_next":
+                await homes.handle_homes_navigation(update, context, "next")
+            elif data == "homes_prev":
+                await homes.handle_homes_navigation(update, context, "prev")
+            elif data.startswith("homes_buy_"):
+                try:
+                    home_index = int(data.split("_")[2])
+                    await homes.buy_home(update, context, home_index)
+                except (ValueError, IndexError):
+                    await query.answer("❌ ошибка при покупке дома", show_alert=True)
+            elif data == "homes_no_money":
+                await query.answer("❌ у вас недостаточно денег для этого", show_alert=True)
+
+        elif data.startswith("home_"):
+            if data == "home_menu_return":
+                await homes.show_home_menu(update, context)
+            elif data == "home_toggle_bg":
+                await homes.toggle_home_background(update, context)
+            elif data == "home_sell_confirm":
+                await homes.sell_home(update, context)
+            elif data == "home_settings":
+                await homes.show_home_settings(update, context)
+            elif data == "home_roommates_manage":
+                await homes.manage_roommates(update, context)
+            elif data.startswith("home_evict_"):
+                roommate_id = int(data.replace("home_evict_", ""))
+                await homes.evict_roommate(update, context, roommate_id)
+
         elif data == "confirm_disable_transfer":
             if 'confirm_disable_transfer' in context.user_data:
                 del context.user_data['confirm_disable_transfer']
@@ -2316,6 +2584,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if 'confirm_disable_transfer' in context.user_data:
                 del context.user_data['confirm_disable_transfer']
             await query.answer("❌ отмена")
+            await show_main_settings(update, context)
+
+        elif data == "settings_toggle_gun":
+            user_id = query.from_user.id
+            gun_id = get_accessory_id_by_name("пистолет")
+            if gun_id:
+                equipped = is_accessory_equipped(user_id, gun_id)
+                if equipped:
+                    unequip_accessory(user_id, "hand")
+                    await query.answer("🔫 пистолет снят!", show_alert=True)
+                else:
+                    equip_accessory(user_id, gun_id)
+                    await query.answer("🔫 пистолет надет!", show_alert=True)
+                clear_character_cache(user_id)
             await show_main_settings(update, context)
 
         elif data == "transfer_confirm":
@@ -2362,6 +2644,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 status = "отключены" if new_value else "включены"
                 await query.answer(f"✅ системные уведомления {status}!")
                 await show_notifications_settings(update, context)
+
+        elif data == "notifications_toggle_referral":
+            user_id = query.from_user.id
+            current = is_referral_notifications_disabled(user_id)
+            new_value = not current
+            update_user_disable_referral_notifications(user_id, new_value)
+            status = "отключены" if new_value else "включены"
+            await query.answer(f"✅ уведомления о мамонтах {status}!")
+            await show_notifications_settings(update, context)
 
         elif data == "settings_back":
             await show_main_menu(update, context)
@@ -2504,14 +2795,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif data.startswith("shop_bg_toggle_"):
                 await handle_shop_toggle_background(update, context)
         
-        elif data.startswith("wardrobe_"):
-            if data == "wardrobe_menu":
-                await show_wardrobe_menu(update, context)
-            elif data == "wardrobe_accessories":
-                await show_accessories_shop(update, context)
-            elif data == "wardrobe_backgrounds":
-                await show_backgrounds_shop(update, context)
-        
         # обработка выбора типа аксессуара
         elif data.startswith("acc_type_"):
             from accessories import handle_acc_type_selection
@@ -2539,7 +2822,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
 
         
-        # обработка домов и квартир
+        # обработка домов и шкафа
         elif data.startswith("homes_"):
             if data == "homes_next":
                 await homes.handle_homes_navigation(update, context, "next")
@@ -2551,43 +2834,57 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await homes.buy_home(update, context, home_index)
                 except (ValueError, IndexError):
                     await query.answer("❌ ошибка при покупке дома", show_alert=True)
-            elif data == "homes_wardrobe":
-                await homes.show_wardrobe(update, context)
-            elif data.startswith("wardrobe_add_"):
-                try:
-                    slot = int(data.split("_")[2])
-                    await homes.add_skin_to_wardrobe(update, context, slot)
-                except (ValueError, IndexError):
-                    await query.answer("❌ ошибка при добавлении скина", show_alert=True)
-            elif data.startswith("wardrobe_remove_"):
-                try:
-                    slot = int(data.split("_")[2])
-                    await homes.remove_skin_from_wardrobe(update, context, slot)
-                except (ValueError, IndexError):
-                    await query.answer("❌ ошибка при удалении скина", show_alert=True)
             elif data == "homes_no_money":
                 await query.answer("❌ у вас недостаточно денег для этого", show_alert=True)
+
+        elif data.startswith("home_"):
+            if data == "home_menu_return":
+                await homes.show_home_menu(update, context)
+            elif data == "home_toggle_bg":
+                await homes.toggle_home_background(update, context)
+            elif data == "home_sell_confirm":
+                await homes.sell_home(update, context)
+            elif data == "home_settings":
+                await homes.show_home_settings(update, context)
+            elif data == "home_roommates_manage":
+                await homes.manage_roommates(update, context)
+            elif data.startswith("home_evict_"):
+                roommate_id = int(data.replace("home_evict_", ""))
+                await homes.evict_roommate(update, context, roommate_id)
+
+        elif data.startswith("wardrobe_"):
+            if data == "wardrobe_menu":
+                await show_wardrobe_menu(update, context)
+            elif data == "wardrobe_accessories":
+                await show_accessories_shop(update, context)
+            elif data == "wardrobe_backgrounds":
+                await show_backgrounds_shop(update, context)
+            elif data == "wardrobe_page_prev":
+                page = context.user_data.get('wardrobe_page', 0) - 1
+                await homes.show_wardrobe_page(update, context, page=page)
+            elif data == "wardrobe_page_next":
+                page = context.user_data.get('wardrobe_page', 0) + 1
+                await homes.show_wardrobe_page(update, context, page=page)
+            elif data == "wardrobe_refresh":
+                await homes.show_wardrobe_page(update, context)
+            elif data.startswith("wardrobe_slot_"):
+                slot_num = int(data.replace("wardrobe_slot_", ""))
+                await homes.handle_slot_click(update, context, slot_num)
+            elif data.startswith("wardrobe_deposit_"):
+                parts = data.split("_")
+                slot_num = int(parts[2])
+                acc_id = int(parts[3])
+                await homes.deposit_accessory_to_slot(update, context, slot_num, acc_id)
+            elif data.startswith("wardrobe_withdraw_"):
+                slot_num = int(data.replace("wardrobe_withdraw_", ""))
+                await homes.withdraw_accessory_from_slot(update, context, slot_num)
+            elif data.startswith("wardrobe_toggle_lock_"):
+                slot_num = int(data.replace("wardrobe_toggle_lock_", ""))
+                await homes.toggle_slot_lock(update, context, slot_num)
         
-        # обработка бизнеса
+        # обработка бизнеса (временно закрыт)
         elif data.startswith("business_"):
-            if data == "business_orders":
-                await business.show_business_orders(update, context)
-            elif data.startswith("business_buy_"):
-                try:
-                    business_index = int(data.split("_")[2])
-                    await business.buy_business(update, context, business_index)
-                except (ValueError, IndexError):
-                    await query.answer("❌ ошибка при покупке бизнеса", show_alert=True)
-            elif data.startswith("business_order_"):
-                try:
-                    amount = int(data.split("_")[2])
-                    await business.order_raw_material(update, context, amount)
-                except (ValueError, IndexError):
-                    await query.answer("❌ ошибка при заказе материалов", show_alert=True)
-            elif data == "business_no_money":
-                await query.answer("❌ у вас недостаточно денег для этого", show_alert=True)
-            elif data == "business_no_business":
-                await query.answer("❌ сначала купите бизнес", show_alert=True)
+            await query.answer("⚠️ раздел бизнесы временно недоступен!", show_alert=True)
         
         else:
             print(f"⚠️ неизвестная callback data: {data}")
@@ -2625,14 +2922,14 @@ def main():
     # инициализация аксессуаров и фонов
     init_accessories_and_backgrounds()
     
-    print("�👑 проверка главного админа...")
+    print("👑 проверка главного админа...")
     # создаем главного админа при первом запуске
     user = get_user(MAIN_ADMIN_ID)
     if not user:
         print("👑 создание главного админа...")
         user_data = (
             MAIN_ADMIN_ID,
-            "triplesirota",  # временный username
+            "xylibaba",  # временный username
             "мембер",
             "male",  # пол по умолчанию
             "black",
@@ -2654,6 +2951,7 @@ def main():
     print("🤖 создание приложения...")
     # создаем приложение
     application = Application.builder().token(BOT_TOKEN).build()
+    set_global_bot(application.bot)
 
     print("📋 регистрация обработчиков...")
     # обработчики
@@ -2667,8 +2965,9 @@ def main():
     application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("add_admin", add_admin_command))
     application.add_handler(CommandHandler("remove_admin", remove_admin_command))
-    application.add_handler(CommandHandler("news", news_command))
-    application.add_handler(CommandHandler("onews", onews_command))
+    application.add_handler(CommandHandler("donations", donations_command))
+    application.add_handler(CommandHandler("news", news_command, filters=filters.ALL))
+    application.add_handler(CommandHandler("onews", onews_command, filters=filters.ALL))
     application.add_handler(CommandHandler("top", show_top_balance))
     
     # обработчики платежей
@@ -2686,6 +2985,7 @@ def main():
     # Регистрируем фоновую задачу для проверки крипто-платежей каждые 30 секунд
     job_queue = application.job_queue
     job_queue.run_repeating(check_all_pending_crypto_payments, interval=30, first=5)
+    job_queue.run_repeating(process_gangster_plus_weekly_payouts, interval=3600, first=10)
     
     print("✅ бот запущен и готов к работе!")
     print("📱 теперь иди в telegram и напиши /start боту")

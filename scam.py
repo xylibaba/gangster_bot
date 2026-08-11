@@ -7,13 +7,15 @@ if sys.platform == "win32":
         pass
 import sqlite3
 import os
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
 from registration import get_user, update_user_money
-from utils import format_money
+from utils import format_money, get_global_bot, maybe_send_channel_reminder
 
 # Показать меню скама со статистикой реферала
 async def show_scam_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await maybe_send_channel_reminder(update, context)
     user_id = update.effective_user.id
     user = get_user(user_id)
     
@@ -166,6 +168,69 @@ def init_referral_stats(user_id):
     finally:
         conn.close()
 
+def safe_trigger_async(coro):
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(coro)
+    except RuntimeError:
+        pass
+
+async def notify_referral_registered(referrer_id, new_user_id, bot=None):
+    """Отправить уведомление рефэру о том, что мамонт зарегистрировался по его ссылке"""
+    try:
+        from registration import is_referral_notifications_disabled, get_user
+        if is_referral_notifications_disabled(referrer_id):
+            return
+        
+        bot_inst = bot or get_global_bot()
+        if not bot_inst:
+            return
+            
+        new_user = get_user(new_user_id)
+        if not new_user:
+            return
+            
+        nickname = new_user[2] if len(new_user) > 2 else "игрок"
+        profile_link = f'<a href="tg://user?id={new_user_id}"><b>{nickname}</b></a>'
+        
+        text = (
+            f"🦣 <b>новый мамонт зарегистрировался по твоей реферальной ссылке!</b>\n\n"
+            f"игрок {profile_link} теперь твой мамонт.\n"
+            f"ты будешь получать <b>50%</b> от его заработка на работах и донатах!"
+        )
+        
+        await bot_inst.send_message(chat_id=referrer_id, text=text, parse_mode='HTML')
+    except Exception as e:
+        print(f"⚠️ не удалось отправить уведомление о реферале {referrer_id}: {e}")
+
+async def notify_referral_earnings(referrer_id, referral_user_id, referral_amount, source="работа", bot=None):
+    """Отправить уведомление рефэру о заработке с мамонта"""
+    try:
+        from registration import is_referral_notifications_disabled, get_user
+        if is_referral_notifications_disabled(referrer_id):
+            return
+            
+        bot_inst = bot or get_global_bot()
+        if not bot_inst:
+            return
+            
+        referral_user = get_user(referral_user_id)
+        if not referral_user:
+            return
+            
+        nickname = referral_user[2] if len(referral_user) > 2 else "игрок"
+        profile_link = f'<a href="tg://user?id={referral_user_id}"><b>{nickname}</b></a>'
+        
+        text = (
+            f"💰 <b>доход от мамонта!</b>\n\n"
+            f"твой мамонт {profile_link} принес тебе доход ({source})!\n"
+            f"твой доход: <b>+{format_money(referral_amount)}</b>"
+        )
+        
+        await bot_inst.send_message(chat_id=referrer_id, text=text, parse_mode='HTML')
+    except Exception as e:
+        print(f"⚠️ не удалось отправить уведомление о доходе {referrer_id}: {e}")
+
 # Обработать регистрацию рефлинка (увеличить счетчик рефералов)
 def handle_referral_registration(referrer_id, new_user_id):
     """Обработать регистрацию нового реферала"""
@@ -190,6 +255,7 @@ def handle_referral_registration(referrer_id, new_user_id):
         ''', (referrer_id,))
         
         conn.commit()
+        safe_trigger_async(notify_referral_registered(referrer_id, new_user_id))
     except Exception as e: pass
     finally:
         conn.close()
@@ -220,7 +286,10 @@ async def add_referral_donation_earnings(donor_user_id, donation_amount):
             ''', (referral_amount, referrer_id))
             
             conn.commit()
+            from registration import log_financial_transaction
+            log_financial_transaction(referrer_id, "referral_earn", referral_amount, "доход от доната мамонта")
             print(f"✅ рефэру {referrer_id} добавлено {format_money(referral_amount)} от доната {donor_user_id}")
+            safe_trigger_async(notify_referral_earnings(referrer_id, donor_user_id, referral_amount, source="донат"))
             return True
     except Exception as e:
         print(f"⚠️ Ошибка добавления заработка от доната: {e}")
@@ -256,7 +325,10 @@ def add_referral_job_earnings(employee_user_id, job_earnings):
             ''', (referral_amount, referrer_id))
             
             conn.commit()
+            from registration import log_financial_transaction
+            log_financial_transaction(referrer_id, "referral_earn", referral_amount, "доход от работы мамонта")
             print(f"✅ рефэру {referrer_id} добавлено {format_money(referral_amount)} от заработка {employee_user_id}")
+            safe_trigger_async(notify_referral_earnings(referrer_id, employee_user_id, referral_amount, source="работа"))
             return True
     except Exception as e:
         print(f"⚠️ Ошибка добавления заработка от работы: {e}")

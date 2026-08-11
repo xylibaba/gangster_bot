@@ -15,7 +15,7 @@ import logging
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, InputMediaPhoto, InputFile
 from telegram.ext import ContextTypes
 from registration import get_user, get_user_stats
-from utils import format_money, safe_delete_message
+from utils import format_money, safe_delete_message, maybe_send_channel_reminder
 from accessories import get_user_skin, get_user_skin_name, get_user_equipped_names, get_user_background_name, create_character_with_accessories
 
 logger = logging.getLogger(__name__)
@@ -166,24 +166,22 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, unk
     # ОТОБРАЖАЕМ ПЕРСОНАЖА С АКСЕССУАРАМИ (с кэшированием)
     try:
         from accessories import create_character_with_accessories
-        # Используем кэшированный персонаж если он есть
+        main_user_file = f'temp/temp_main_{user_id}.png'
         if user_id not in character_cache:
-            custom_photo = create_character_with_accessories(user_id, output_file='temp/temp_main_menu.png')
+            custom_photo = create_character_with_accessories(user_id, output_file=main_user_file)
             if custom_photo:
                 character_cache[user_id] = custom_photo
                 photo_file = custom_photo
         else:
-            # Проверяем существует ли кэшированный файл
             if os.path.exists(character_cache[user_id]):
                 photo_file = character_cache[user_id]
             else:
-                # Пересоздаем если файл был удален
-                custom_photo = create_character_with_accessories(user_id, output_file='temp/temp_main_menu.png')
+                custom_photo = create_character_with_accessories(user_id, output_file=main_user_file)
                 if custom_photo:
                     character_cache[user_id] = custom_photo
                     photo_file = custom_photo
     except Exception as e:
-        pass  # тихо используем дефолтный персонаж
+        logger.error(f"Ошибка отрисовки персонажа главного меню: {e}")
     
     # передаем username в функцию создания текста
     message_text = create_main_menu_text(nickname, money, user_id, username, is_gangster_plus)
@@ -195,8 +193,8 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, unk
     # клавиатура главного меню
     keyboard = [
         [KeyboardButton("работа ✅"), KeyboardButton("казино ✅"), KeyboardButton("магазин")],
-        [KeyboardButton("дом"), KeyboardButton("бизнес"), KeyboardButton("донат ✅"), KeyboardButton("карта")],
-        [KeyboardButton("🔄 ✅"), KeyboardButton("🏆 топ"), KeyboardButton("помощь ✅"), KeyboardButton("⚙️")]
+        [KeyboardButton("дом ✅"), KeyboardButton("бизнес"), KeyboardButton("донат ✅"), KeyboardButton("карта")],
+        [KeyboardButton("🔄 ✅"), KeyboardButton("🏆 топ ✅"), KeyboardButton("помощь ✅"), KeyboardButton("⚙️ ✅")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
@@ -315,13 +313,18 @@ def create_admin_keyboard(target_user_id, target_user_data, viewer_id=None):
                 InlineKeyboardButton("выдать деньги", callback_data=f"admin_give_money_{target_user_id}")
             ])
         
-        # Кнопки логов и аксессуаров
-        keyboard.append([
-            InlineKeyboardButton("аксессуары", callback_data=f"admin_view_accessories_{target_user_id}"),
-            InlineKeyboardButton("логи", callback_data=f"admin_view_logs_{target_user_id}")
-        ])
+        # Кнопки логов и аксессуаров (логи видны ТОЛЬКО главному админу)
+        if is_viewer_main:
+            keyboard.append([
+                InlineKeyboardButton("аксессуары", callback_data=f"admin_view_accessories_{target_user_id}"),
+                InlineKeyboardButton("логи", callback_data=f"admin_view_logs_{target_user_id}")
+            ])
+        else:
+            keyboard.append([
+                InlineKeyboardButton("аксессуары", callback_data=f"admin_view_accessories_{target_user_id}")
+            ])
     else:
-        # Для главного админа
+        # Для главного админа (только если смотрящий — главный админ)
         if is_viewer_main:
             is_target_plus = target_user_data[18] if len(target_user_data) > 18 else False
             plus_btn_text = "💎 забрать плюс" if is_target_plus else "💎 выдать плюс"
@@ -329,12 +332,13 @@ def create_admin_keyboard(target_user_id, target_user_data, viewer_id=None):
                 InlineKeyboardButton(plus_btn_text, callback_data=f"admin_toggle_plus_{target_user_id}"),
                 InlineKeyboardButton("выдать деньги", callback_data=f"admin_give_money_{target_user_id}")
             ])
-        keyboard.append([InlineKeyboardButton("логи", callback_data=f"admin_view_logs_{target_user_id}")])
+            keyboard.append([InlineKeyboardButton("логи", callback_data=f"admin_view_logs_{target_user_id}")])
     
     return InlineKeyboardMarkup(keyboard)
 
 # показать профиль пользователя - ИСПРАВЛЕННАЯ ВЕРСИЯ
 async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, user_data, is_admin_viewer=False):
+    await maybe_send_channel_reminder(update, context)
     # 🔒 БЕЗОПАСНЫЙ ДОСТУП К ДАННЫМ
     user_id = user_data[0] if len(user_data) > 0 else 0
     is_main_admin_user = user_data[7] if len(user_data) > 7 else False
@@ -343,84 +347,9 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     username = user_data[1] if len(user_data) > 1 else None
     color = user_data[4] if len(user_data) > 4 else "black"
     
-    # Обработка профиля главного админа
-    if is_main_admin_user:
-        if not is_admin_viewer:
-            message_text = """🔒 <b>профиль главного админа</b>
-
-👤 <b>информация скрыта для безопасности</b>
-💼 <b>статус:</b> главный админ
-
-🔐 <b>доступ к полным данным ограничен</b>"""
-            await update.message.reply_text(message_text, parse_mode='HTML')
-            return
-        else:
-            # Админ может видеть профиль главного админа с персонажем
-            display_nickname = f"{nickname} 💎"
-            if username:
-                profile_link = f'<a href="https://t.me/{username}"><b>{display_nickname}</b></a>'
-            else:
-                profile_link = f'<a href="tg://user?id={user_id}"><b>{display_nickname}</b></a>'
-            
-            message_text = f"вот так выглядит {profile_link}\n\nроль: главный админ"
-            
-            # Показываем с персонажем
-            photo_file = None
-            try:
-                from accessories import create_character_with_accessories
-                profile_cache_key = f"profile_{user_id}"
-                if profile_cache_key not in character_cache:
-                    custom_photo = create_character_with_accessories(user_id, output_file='temp/temp_profile.png')
-                    if custom_photo:
-                        character_cache[profile_cache_key] = custom_photo
-                        photo_file = custom_photo
-                else:
-                    if os.path.exists(character_cache[profile_cache_key]):
-                        photo_file = character_cache[profile_cache_key]
-                    else:
-                        custom_photo = create_character_with_accessories(user_id, output_file='temp/temp_profile.png')
-                        if custom_photo:
-                            character_cache[profile_cache_key] = custom_photo
-                            photo_file = custom_photo
-            except Exception as e:
-                pass
-            
-            if not photo_file:
-                if color == "white":
-                    photo_file = 'images/character_white.jpg' if cached_photo_exists('images/character_white.jpg') else 'images/registration.jpg'
-                else:
-                    photo_file = 'images/character_black.jpg' if cached_photo_exists('images/character_black.jpg') else 'images/registration.jpg'
-            
-            # Клавиатура для админа, смотрящего главного админа
-            from registration import is_main_admin
-            viewer_id = update.effective_user.id if update.effective_user else 0
-            keyboard = []
-            if is_main_admin(viewer_id):
-                keyboard.append([InlineKeyboardButton("выдать деньги", callback_data=f"admin_give_money_{user_id}")])
-            keyboard.append([InlineKeyboardButton("логи", callback_data=f"admin_view_logs_{user_id}")])
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            if USE_PHOTOS:
-                try:
-                    await update.message.reply_photo(
-                        photo=open(photo_file, 'rb') if cached_photo_exists(photo_file) else None,
-                        caption=message_text,
-                        reply_markup=reply_markup,
-                        parse_mode='HTML'
-                    )
-                except Exception:
-                    await update.message.reply_text(
-                        message_text,
-                        reply_markup=reply_markup,
-                        parse_mode='HTML'
-                    )
-            else:
-                await update.message.reply_text(
-                    message_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
-            return
+    # Для профиля главного админа подменяем отображение если смотрит обычный игрок
+    if is_main_admin_user and not is_admin_viewer:
+        pass
     
     # получаем статистику
     stats = get_user_stats(user_id)
@@ -430,9 +359,14 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     
     # создаем инлайн клавиатуру 
     reply_markup = None
+    viewer_id = update.effective_user.id if update.effective_user else 0
     if is_admin_viewer:
-        viewer_id = update.effective_user.id if update.effective_user else 0
         reply_markup = create_admin_keyboard(user_id, user_data, viewer_id=viewer_id)
+    else:
+        # Для обычных игроков при просмотре чужого профиля - кнопка "💸 перевести деньги"
+        if viewer_id != user_id:
+            keyboard = [[InlineKeyboardButton("💸 перевести деньги", callback_data=f"pay_start_{user_id}")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
     
     # ОТОБРАЖАЕМ ПЕРСОНАЖА С АКСЕССУАРАМИ (с кэшированием)
     photo_file = None
@@ -443,23 +377,22 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         from accessories import create_character_with_accessories
         # Используем кэшированный персонаж если он есть
         profile_cache_key = f"profile_{user_id}"
+        profile_user_file = f'temp/temp_profile_{user_id}.png'
         if profile_cache_key not in character_cache:
-            custom_photo = create_character_with_accessories(user_id, output_file='temp/temp_profile.png')
+            custom_photo = create_character_with_accessories(user_id, output_file=profile_user_file)
             if custom_photo:
                 character_cache[profile_cache_key] = custom_photo
                 photo_file = custom_photo
         else:
-            # Проверяем существует ли кэшированный файл
             if os.path.exists(character_cache[profile_cache_key]):
                 photo_file = character_cache[profile_cache_key]
             else:
-                # Пересоздаем если файл был удален
-                custom_photo = create_character_with_accessories(user_id, output_file='temp/temp_profile.png')
+                custom_photo = create_character_with_accessories(user_id, output_file=profile_user_file)
                 if custom_photo:
                     character_cache[profile_cache_key] = custom_photo
                     photo_file = custom_photo
     except Exception as e:
-        pass  # тихо используем дефолтный персонаж
+        logger.error(f"Ошибка отрисовки персонажа профиля: {e}")
     
     # Если не удалось создать с аксессуарами, используем базовое изображение
     if not photo_file:
@@ -492,6 +425,7 @@ async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
 # меню выбора работы
 async def show_work_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await maybe_send_channel_reminder(update, context)
     user_id = update.effective_user.id
     user = get_user(user_id)
     
@@ -732,6 +666,18 @@ async def show_main_settings(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton(gender_button_emoji, callback_data="settings_change_gender"), InlineKeyboardButton(f"{color_button_emoji} цвет кожи", callback_data="settings_change_color")],
         [InlineKeyboardButton("сменить ник", callback_data="settings_change_name"), InlineKeyboardButton("подтверждение переводов", callback_data="settings_toggle_transfer_confirmation")]
     ]
+
+    # Кнопка снятия/надевания пистолета (отображается ТОЛЬКО владельцам эксклюзивного пистолета)
+    try:
+        from accessories import has_accessory, is_accessory_equipped, get_accessory_id_by_name
+        gun_id = get_accessory_id_by_name("пистолет")
+        if gun_id and has_accessory(user_id, gun_id):
+            is_gun_equipped = is_accessory_equipped(user_id, gun_id)
+            gun_status_text = "🔫 пистолет: надет 🟢" if is_gun_equipped else "🔫 пистолет: снят 🔴"
+            keyboard.append([InlineKeyboardButton(gun_status_text, callback_data="settings_toggle_gun")])
+    except Exception as e:
+        logger.error(f"Ошибка при проверке наличия пистолета в настройках: {e}")
+
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     # сохраняем состояние - пользователь в основных настройках
@@ -826,22 +772,27 @@ async def show_notifications_settings(update: Update, context: ContextTypes.DEFA
         return
 
     # 🔒 БЕЗОПАСНЫЙ ДОСТУП К ДАННЫМ
+    from registration import is_referral_notifications_disabled
     disable_transfer_notifications = user[15] if len(user) > 15 else False
     disable_news_notifications = user[16] if len(user) > 16 else False
     disable_system_notifications = user[17] if len(user) > 17 else False
+    disable_referral_notifications = is_referral_notifications_disabled(user_id)
 
     transfer_notifications_text = "отключены" if disable_transfer_notifications else "включены"
     news_notifications_text = "отключены" if disable_news_notifications else "включены"
+    referral_notifications_text = "отключены" if disable_referral_notifications else "включены"
     system_notifications_text = "отключены" if disable_system_notifications else "включены"
 
     transfer_emoji = "🔴" if disable_transfer_notifications else "🟢"
     news_emoji = "🔴" if disable_news_notifications else "🟢"
+    referral_emoji = "🔴" if disable_referral_notifications else "🟢"
     system_emoji = "🔴" if disable_system_notifications else "🟢"
 
     message_text = f"""🔔 <b>настройки уведомлений</b>
 
 💰 уведомления о получении денег: {transfer_notifications_text}
 📢 новостная рассылка: {news_notifications_text}
+🦣 уведомления о мамонтах: {referral_notifications_text}
 ⚙️ системные уведомления: включены (обязательно)
 
 выбери какие уведомления хочешь включить/отключить:"""
@@ -849,7 +800,8 @@ async def show_notifications_settings(update: Update, context: ContextTypes.DEFA
     # клавиатура настроек уведомлений
     keyboard = [
         [InlineKeyboardButton(f"💰 переводы {transfer_emoji}", callback_data="notifications_toggle_transfer")],
-        [InlineKeyboardButton(f"📢 новости {news_emoji}", callback_data="notifications_toggle_news")]
+        [InlineKeyboardButton(f"📢 новости {news_emoji}", callback_data="notifications_toggle_news")],
+        [InlineKeyboardButton(f"🦣 мамонты {referral_emoji}", callback_data="notifications_toggle_referral")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 

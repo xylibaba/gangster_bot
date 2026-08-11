@@ -39,8 +39,13 @@ def is_cleaning_in_progress(context: ContextTypes.DEFAULT_TYPE, user_id: int):
 
 # инициализация базы данных - ИСПРАВЛЕННАЯ ВЕРСИЯ (без удаления таблиц)
 def init_db():
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL;")
+        cursor.execute("PRAGMA busy_timeout=30000;")
+    except Exception:
+        pass
     
     # СОЗДАЕМ ТАБЛИЦЫ ТОЛЬКО ЕСЛИ ИХ НЕТ (без DROP TABLE)
     cursor.execute('''
@@ -153,6 +158,11 @@ def init_db():
         pass
 
     try:
+        cursor.execute("ALTER TABLE users ADD COLUMN disable_referral_notifications BOOLEAN DEFAULT FALSE")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
         cursor.execute("ALTER TABLE users ADD COLUMN is_gangster_plus BOOLEAN DEFAULT FALSE")
     except sqlite3.OperationalError:
         pass
@@ -187,6 +197,29 @@ def init_db():
         cursor.execute("ALTER TABLE users ADD COLUMN admin_warnings INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
         pass
+
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN boost_2x_until REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN gangster_plus_until REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE users ADD COLUMN last_plus_weekly_payout REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS user_skins (
+            user_id INTEGER,
+            skin_id INTEGER,
+            PRIMARY KEY (user_id, skin_id)
+        )
+    ''')
 
     # Таблица для статистики реферала
     cursor.execute('''
@@ -427,20 +460,61 @@ def log_admin_action(admin_id, action, target_id=None, details=""):
     conn.commit()
     conn.close()
 
-def get_user_activity_logs(user_id, limit=10):
-    """Получить логи активности пользователя (переводы денег, заработки)"""
+def init_financial_logs_db():
+    """Инициализация таблицы логирования финансовых операций"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS financial_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            action_type TEXT NOT NULL,
+            amount INTEGER NOT NULL,
+            details TEXT,
+            timestamp REAL NOT NULL
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def log_financial_transaction(user_id: int, action_type: str, amount: int, details: str = ""):
+    """Логирует финансовую операцию пользователя и удаляет логи старше 7 дней"""
+    try:
+        init_financial_logs_db()
+        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        cursor = conn.cursor()
+        current_time = time.time()
+        
+        cursor.execute('''
+            INSERT INTO financial_logs (user_id, action_type, amount, details, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (user_id, action_type, amount, details, current_time))
+        
+        # Удаляем логи старше 7 дней (7 * 86400 = 604800 секунд)
+        seven_days_ago = current_time - 604800
+        cursor.execute('DELETE FROM financial_logs WHERE timestamp < ?', (seven_days_ago,))
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка при логировании финансовой транзакции: {e}")
+
+def get_user_activity_logs(user_id: int, limit: int = 30):
+    """Получает логи финансовой активности пользователя за последние 7 дней"""
+    init_financial_logs_db()
     conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
     cursor = conn.cursor()
     
+    seven_days_ago = time.time() - 604800
+    
     try:
-        # Получаем переводы денег
         cursor.execute('''
-            SELECT from_user_id, to_user_id, amount, transfer_date
-            FROM money_transfers
-            WHERE from_user_id = ? OR to_user_id = ?
-            ORDER BY transfer_date DESC
+            SELECT action_type, amount, details, timestamp
+            FROM financial_logs
+            WHERE user_id = ? AND timestamp >= ?
+            ORDER BY timestamp DESC
             LIMIT ?
-        ''', (user_id, user_id, limit))
+        ''', (user_id, seven_days_ago, limit))
         
         logs = cursor.fetchall()
     finally:
@@ -1808,6 +1882,29 @@ def update_user_disable_system_notifications(user_id, disable):
     conn.commit()
     conn.close()
 
+# функция для обновления настройки отключения уведомлений о мамонтах (рефералах)
+def update_user_disable_referral_notifications(user_id, disable):
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('UPDATE users SET disable_referral_notifications = ? WHERE user_id = ?', (disable, user_id))
+    conn.commit()
+    conn.close()
+
+# функция для проверки, отключены ли уведомления о мамонтах
+def is_referral_notifications_disabled(user_id):
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT disable_referral_notifications FROM users WHERE user_id = ?', (user_id,))
+        res = cursor.fetchone()
+        if res and res[0]:
+            return True
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return False
+
 def get_all_user_ids():
     """Получить список всех зарегистрированных не забаненных пользователей для рассылки"""
     conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
@@ -1833,5 +1930,76 @@ def get_news_subscribed_user_ids():
     except Exception as e:
         logger.error(f"Error fetching news subscribed user ids: {e}")
         return []
+    finally:
+        conn.close()
+
+def get_user_boost_2x_until(user_id: int) -> float:
+    """Получает время окончания х2 буста заработка"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT boost_2x_until FROM users WHERE user_id = ?', (user_id,))
+        res = cursor.fetchone()
+        return res[0] if res and res[0] else 0.0
+    except Exception:
+        return 0.0
+    finally:
+        conn.close()
+
+def add_user_2x_boost(user_id: int, duration_seconds: int = 86400):
+    """Активирует или продлевает х2 со всего заработка"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT boost_2x_until FROM users WHERE user_id = ?', (user_id,))
+        res = cursor.fetchone()
+        current_until = res[0] if res and res[0] else 0.0
+        now = time.time()
+        new_until = max(now, current_until) + duration_seconds
+        cursor.execute('UPDATE users SET boost_2x_until = ? WHERE user_id = ?', (new_until, user_id))
+        conn.commit()
+        logger.info(f"x2 boost activated for user {user_id} until {new_until}")
+        return new_until
+    except Exception as e:
+        logger.error(f"Error adding 2x boost for {user_id}: {e}")
+        return 0.0
+    finally:
+        conn.close()
+
+def get_user_earnings_multiplier(user_id: int) -> float:
+    """Вычисляет итоговый множитель дохода пользователя (учитывает Гангстер Плюс x4 и Буст x2)"""
+    multiplier = 1.0
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('SELECT is_gangster_plus, boost_2x_until, gangster_plus_until FROM users WHERE user_id = ?', (user_id,))
+        row = cursor.fetchone()
+        if row:
+            is_plus, boost_until, plus_until = row[0], row[1] or 0.0, row[2] or 0.0
+            now = time.time()
+            
+            # Если подписка активна (не истекла или бессрочная)
+            if is_plus and (plus_until == 0.0 or plus_until > now):
+                multiplier *= 4.0
+            
+            # Если буст х2 активен
+            if boost_until > now:
+                multiplier *= 2.0
+    except Exception as e:
+        logger.error(f"Error calculating earnings multiplier for {user_id}: {e}")
+    finally:
+        conn.close()
+    return multiplier
+
+def give_user_skin(user_id: int, skin_id: int):
+    """Выдает пользователю скин во владение"""
+    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    cursor = conn.cursor()
+    try:
+        cursor.execute('INSERT OR IGNORE INTO user_skins (user_id, skin_id) VALUES (?, ?)', (user_id, skin_id))
+        conn.commit()
+        logger.info(f"Skin {skin_id} granted to user {user_id}")
+    except Exception as e:
+        logger.error(f"Error giving skin {skin_id} to user {user_id}: {e}")
     finally:
         conn.close()

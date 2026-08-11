@@ -10,8 +10,8 @@ import random
 import asyncio
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from registration import get_user, update_user_money
-from utils import format_money, parse_amount
+from registration import get_user, update_user_money, log_financial_transaction
+from utils import format_money, parse_amount, maybe_send_channel_reminder
 from main_menu import show_work_menu, show_main_menu, show_settings, show_main_settings
 from shit_cleaner import start_shit_cleaning, cancel_cleaning
 from milker import start_milking, cancel_milking
@@ -55,6 +55,7 @@ def parse_bet_amount(bet_str: str, user_balance: int) -> int:
 
 # Главное меню казино
 async def show_casino_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await maybe_send_channel_reminder(update, context)
     user_id = update.effective_user.id
     user = get_user(user_id)
 
@@ -257,6 +258,8 @@ async def play_slot_machine(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         )
         return
 
+    log_financial_transaction(user_id, "casino_loss", -bet_amount, "казино: ставка в слоты")
+
     # Отправляем анимированный стикер автомата из Telegram
     try:
         dice_message = await context.bot.send_dice(
@@ -299,6 +302,7 @@ async def play_slot_machine(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     # Выдаем выигрыш
     if win_amount > 0:
         update_user_money(user_id, win_amount)
+        log_financial_transaction(user_id, "casino_win", win_amount, f"казино: выигрыш в слоты ({win_text})")
         new_balance += win_amount
 
     # Определяем заголовок результата
@@ -654,6 +658,7 @@ async def blackjack_end_game(update: Update, context: ContextTypes.DEFAULT_TYPE,
     # Выдаем выигрыш
     if win_amount > 0:
         game_state['current_balance'] = update_user_money(user_id, win_amount)
+        log_financial_transaction(user_id, "casino_win", win_amount, f"казино: выигрыш в блэкджек ({result_text})")
 
     # Сохраняем финальную ставку для следующей игры
     context.user_data['last_blackjack_bet'] = game_state['bet_amount']
@@ -762,6 +767,8 @@ async def play_blackjack(update: Update, context: ContextTypes.DEFAULT_TYPE, bet
             text="❌ недостаточно средств!"
         )
         return
+
+    log_financial_transaction(user_id, "casino_loss", -bet_amount, "казино: ставка в блэкджек")
 
     # Генерируем начальные карты
     cards = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']

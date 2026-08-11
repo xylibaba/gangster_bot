@@ -15,7 +15,7 @@ import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from registration import get_user, update_user_money
-from utils import format_money
+from utils import format_money, maybe_send_channel_reminder
 
 # Конфигурация бизнеса
 BUSINESSES = [
@@ -32,6 +32,7 @@ BUSINESSES = [
 # Показать список бизнеса для покупки
 async def show_business_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает каталог бизнеса"""
+    await maybe_send_channel_reminder(update, context)
     user_id = update.effective_user.id
     user = get_user(user_id)
     
@@ -113,6 +114,8 @@ async def buy_business(update: Update, context: ContextTypes.DEFAULT_TYPE, busin
         
         # Снимаем деньги
         update_user_money(user_id, -business['price'])
+        from registration import log_financial_transaction
+        log_financial_transaction(user_id, "buy_business", -business['price'], f"покупка бизнеса '{business['name']}'")
         
         # Добавляем бизнес в БД
         conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)

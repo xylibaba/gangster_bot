@@ -24,6 +24,16 @@ def format_money(amount: int) -> str:
     else:
         return f"{amount:,}$".replace(",", ".")
 
+# Глобальная ссылка на инстанс бота Telegram для фоновых уведомлений
+_global_bot = None
+
+def set_global_bot(bot):
+    global _global_bot
+    _global_bot = bot
+
+def get_global_bot():
+    return _global_bot
+
 # функция для безопасного удаления сообщения
 async def safe_delete_message(context, chat_id, message_id):
     try:
@@ -87,4 +97,54 @@ def parse_amount(amount_str: str, max_amount: int = None) -> int:
     try:
         return int(float(raw_str))
     except ValueError:
-        return 0
+        return 0
+
+# Функция для проверки подписки на канал
+async def is_user_subscribed_to_channel(bot, user_id: int, channel_username: str = "@botgangster") -> bool:
+    """Проверяет, подписан ли пользователь на Telegram канал"""
+    try:
+        member = await bot.get_chat_member(chat_id=channel_username, user_id=user_id)
+        if member.status in ['member', 'administrator', 'creator', 'restricted']:
+            return True
+    except Exception:
+        pass
+    return False
+
+# Функция для отправки напоминания о подписке на канал с вероятностью 25%
+async def maybe_send_channel_reminder(update, context):
+    """С шансом 25% отправляет сообщение с напоминанием подписаться на канал telegram.me/botgangster (если юзер НЕ подписан)"""
+    import random
+    if random.random() < 0.25:
+        try:
+            user_id = update.effective_user.id if update and update.effective_user else None
+            if not user_id:
+                return
+                
+            # Проверяем подписку
+            subscribed = await is_user_subscribed_to_channel(context.bot, user_id, "@botgangster")
+            if subscribed:
+                # Если уже подписан — не отправляем
+                return
+            
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            reminder_text = (
+                "📢 <b>не забудь подписаться на наш канал!</b>\n\n"
+                "там выходят свежие новости, бонусы и промокоды:\n"
+                "👉 telegram.me/botgangster"
+            )
+            keyboard = [
+                [InlineKeyboardButton("📢 подписаться на канал", url="https://telegram.me/botgangster")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            chat_id = update.effective_chat.id if update and update.effective_chat else None
+            if chat_id:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=reminder_text,
+                    parse_mode='HTML',
+                    reply_markup=reply_markup,
+                    disable_web_page_preview=True
+                )
+        except Exception as e:
+            print(f"⚠️ не удалось отправить напоминание о канале: {e}")
