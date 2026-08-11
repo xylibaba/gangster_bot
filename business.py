@@ -14,7 +14,7 @@ import time
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from registration import get_user, update_user_money
+from registration import get_user, update_user_money, DB_PATH
 from utils import format_money, maybe_send_channel_reminder
 
 # Конфигурация бизнеса
@@ -118,7 +118,7 @@ async def buy_business(update: Update, context: ContextTypes.DEFAULT_TYPE, busin
         log_financial_transaction(user_id, "buy_business", -business['price'], f"покупка бизнеса '{business['name']}'")
         
         # Добавляем бизнес в БД
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -140,7 +140,7 @@ async def buy_business(update: Update, context: ContextTypes.DEFAULT_TYPE, busin
 # Получить бизнес пользователя
 def get_user_business(user_id):
     """Получить информацию о бизнесе пользователя"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT * FROM user_business WHERE user_id = ?', (user_id,))
@@ -213,7 +213,7 @@ async def order_raw_material(update: Update, context: ContextTypes.DEFAULT_TYPE,
             return
         
         # Добавляем заказ
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         try:
             current_time = time.time()
@@ -248,7 +248,7 @@ async def deliver_raw_material(user_id, context, amount):
         await asyncio.sleep(600)
         
         # Добавляем сырье в запас
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         try:
             cursor.execute('''
@@ -279,7 +279,7 @@ async def deliver_raw_material(user_id, context, amount):
 async def consume_raw_material(user_id):
     """Автоматически расходует сырье за истекший период"""
     try:
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         try:
             # Получаем все истекшие заказы сырья

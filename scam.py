@@ -10,7 +10,7 @@ import os
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
-from registration import get_user, update_user_money
+from registration import get_user, update_user_money, DB_PATH
 from utils import format_money, get_global_bot, maybe_send_channel_reminder
 
 # Показать меню скама со статистикой реферала
@@ -131,7 +131,7 @@ async def show_scam_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Получить статистику реферала
 def get_referral_stats(user_id):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -158,7 +158,7 @@ def get_referral_stats(user_id):
 
 # Инициализировать статистику реферала для нового пользователя
 def init_referral_stats(user_id):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -234,7 +234,7 @@ async def notify_referral_earnings(referrer_id, referral_user_id, referral_amoun
 # Обработать регистрацию рефлинка (увеличить счетчик рефералов)
 def handle_referral_registration(referrer_id, new_user_id):
     """Обработать регистрацию нового реферала"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -263,7 +263,7 @@ def handle_referral_registration(referrer_id, new_user_id):
 # Добавить заработок от доната рефэру
 async def add_referral_donation_earnings(donor_user_id, donation_amount):
     """Добавить 50% от доната рефэру донатера"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -302,7 +302,7 @@ async def add_referral_donation_earnings(donor_user_id, donation_amount):
 # Добавить заработок от работы рефэру
 def add_referral_job_earnings(employee_user_id, job_earnings):
     """Добавить 50% от заработка на работе рефэру сотрудника"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:

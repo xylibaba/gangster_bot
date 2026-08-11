@@ -10,7 +10,7 @@ import os
 import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
 from telegram.ext import ContextTypes
-from registration import get_user, update_user_money, is_admin
+from registration import get_user, update_user_money, is_admin, DB_PATH
 from utils import format_money, safe_delete_message, maybe_send_channel_reminder
 
 try:
@@ -127,7 +127,7 @@ DEFAULT_BACKGROUNDS = [
 # Инициализация стандартных скинов, аксессуаров и фонов в БД
 def init_accessories_and_backgrounds():
     """Добавляет встроенные скины, аксессуары и фоны в базу, если их там еще нет"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -176,7 +176,7 @@ def init_accessories_and_backgrounds():
 # Получение всех доступных аксессуаров
 def get_all_accessories():
     """Получает все доступные аксессуары"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('SELECT * FROM accessories WHERE is_available = TRUE ORDER BY type, price')
@@ -188,7 +188,7 @@ def get_all_accessories():
 # Получение аксессуаров по типу
 def get_accessories_by_type(acc_type):
     """Получает аксессуары определенного типа (head, hand, body, feet)"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('SELECT * FROM accessories WHERE type = ? AND is_available = TRUE ORDER BY price', (acc_type,))
@@ -200,7 +200,7 @@ def get_accessories_by_type(acc_type):
 # Получение купленных пользователем аксессуаров
 def get_user_accessories(user_id):
     """Получает список посчитанных пользователем аксессуаров"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -217,7 +217,7 @@ def get_user_accessories(user_id):
 
 def get_accessory_id_by_name(name: str):
     """Получает accessory_id аксессуара по имени"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT accessory_id FROM accessories WHERE name = ?', (name,))
     result = cursor.fetchone()
@@ -226,7 +226,7 @@ def get_accessory_id_by_name(name: str):
 
 def ensure_gun_accessory_in_db():
     """Гарантирует существование эксклюзивного аксессуара 'пистолет' в БД"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT accessory_id FROM accessories WHERE name = 'пистолет'")
     row = cursor.fetchone()
@@ -245,7 +245,7 @@ def ensure_gun_accessory_in_db():
 
 def ensure_molodoy_accessory_in_db():
     """Гарантирует существование аксессуара 'молодой' в БД"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT accessory_id FROM accessories WHERE name = 'молодой'")
     row = cursor.fetchone()
@@ -265,7 +265,7 @@ def ensure_molodoy_accessory_in_db():
 def give_user_molodoy_accessory(user_id: int):
     """Выдает пользователю скин/футболку 'молодой' и автоматически надевает его"""
     acc_id = ensure_molodoy_accessory_in_db()
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT 1 FROM user_items WHERE user_id = ? AND accessory_id = ?', (user_id, acc_id))
     if not cursor.fetchone():
@@ -281,7 +281,7 @@ def give_user_molodoy_accessory(user_id: int):
 def give_user_gun_accessory(user_id):
     """Выдает пользователю эксклюзивный аксессуар пистолет и надевает его"""
     gun_id = ensure_gun_accessory_in_db()
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT 1 FROM user_items WHERE user_id = ? AND accessory_id = ?', (user_id, gun_id))
     if not cursor.fetchone():
@@ -297,7 +297,7 @@ def give_user_gun_accessory(user_id):
 # Проверка, купил ли пользователь аксессуар
 def has_accessory(user_id, accessory_id):
     """Проверяет, купил ли пользователь конкретный аксессуар"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('SELECT 1 FROM user_items WHERE user_id = ? AND accessory_id = ?', (user_id, accessory_id))
@@ -309,7 +309,7 @@ def has_accessory(user_id, accessory_id):
 # Покупка аксессуара
 def buy_accessory(user_id, accessory_id):
     """Покупает аксессуар для пользователя и сразу его надевает"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -359,7 +359,7 @@ def buy_accessory(user_id, accessory_id):
 # Надевание аксессуара
 def equip_accessory(user_id, accessory_id):
     """Одевает аксессуар"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -414,7 +414,7 @@ def equip_accessory(user_id, accessory_id):
 # Снятие аксессуара
 def unequip_accessory(user_id, acc_type):
     """Снимает аксессуар определенного типа"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -442,7 +442,7 @@ def unequip_accessory(user_id, acc_type):
 # Получение надетых аксессуаров пользователя
 def get_user_equipped_accessories(user_id):
     """Получает надетые аксессуары пользователя"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('SELECT * FROM user_equipped WHERE user_id = ?', (user_id,))
@@ -462,7 +462,7 @@ def get_user_equipped_accessories(user_id):
 # Получение имен надетых аксессуаров пользователя
 def get_user_equipped_names(user_id):
     """Получает имена всех надетых аксессуаров пользователя"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -491,7 +491,7 @@ def get_user_equipped_names(user_id):
 # Проверка, надет ли конкретный аксессуар
 def is_accessory_equipped(user_id, accessory_id):
     """Проверяет, надет ли конкретный аксессуар на пользователе"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -512,7 +512,7 @@ def is_accessory_equipped(user_id, accessory_id):
 # Проверка, применен ли конкретный фон
 def is_background_equipped(user_id, background_id):
     """Проверяет, применен ли конкретный фон у пользователя"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -531,7 +531,7 @@ def is_background_equipped(user_id, background_id):
 # Получение имени активного фона пользователя
 def get_user_background_name(user_id):
     """Получает имя активного фона пользователя"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -552,7 +552,7 @@ def get_user_background_name(user_id):
 # Получение всех доступных фонов
 def get_all_backgrounds():
     """Получает все доступные фоны"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('SELECT * FROM backgrounds WHERE is_available = TRUE ORDER BY price')
@@ -564,7 +564,7 @@ def get_all_backgrounds():
 # Получение купленных пользователем фонов
 def get_user_backgrounds(user_id):
     """Получает список купленных пользователем фонов"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -582,7 +582,7 @@ def get_user_backgrounds(user_id):
 # Проверка, купил ли пользователь фон
 def has_background(user_id, background_id):
     """Проверяет, купил ли пользователь конкретный фон"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     # В таблице user_items используем наоборот - background_id как accessory_id
@@ -597,7 +597,7 @@ def has_background(user_id, background_id):
 # Покупка фона
 def buy_background(user_id, background_id):
     """Покупает фон для пользователя"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -657,7 +657,7 @@ def buy_background(user_id, background_id):
 # Установка активного фона
 def set_active_background(user_id, background_id):
     """Устанавливает активный фон для пользователя"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -692,7 +692,7 @@ def set_active_background(user_id, background_id):
 # Получение активного фона пользователя
 def get_user_background(user_id):
     """Получает активный фон пользователя"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -713,7 +713,7 @@ def get_user_background(user_id):
 # Получение активного скина пользователя
 def get_user_skin(user_id):
     """Получает активный скин пользователя с учетом выбора цвета в таблице users"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('SELECT image_file FROM skins WHERE skin_id = (SELECT skin_id FROM user_skin WHERE user_id = ?)', (user_id,))
@@ -734,7 +734,7 @@ def get_user_skin(user_id):
 # Получение имени активного скина пользователя
 def get_user_skin_name(user_id):
     """Получает имя активного скина пользователя"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('SELECT name FROM skins WHERE skin_id = (SELECT skin_id FROM user_skin WHERE user_id = ?)', (user_id,))
@@ -747,7 +747,7 @@ def get_user_skin_name(user_id):
 # Установка активного скина пользователю
 def set_user_skin(user_id, skin_id):
     """Устанавливает активный скин пользователю"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -770,7 +770,7 @@ def set_user_skin(user_id, skin_id):
 
 def get_skin_id_by_image(image_file: str):
     """Получает ID скина по пути к изображению"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT skin_id FROM skins WHERE image_file = ?', (image_file,))
@@ -784,7 +784,7 @@ def get_skin_id_by_image(image_file: str):
 
 def get_user_owned_skins(user_id: int):
     """Получает список доступных скинов пользователя (дефолтные + купленные/разблокированные)"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     skins = []
     try:
@@ -810,7 +810,7 @@ def get_user_owned_skins(user_id: int):
 
 def unequip_user_skin(user_id: int):
     """Снимает уникальный скин пользователя и сбрасывает к дефолтному"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('DELETE FROM user_skin WHERE user_id = ?', (user_id,))
@@ -838,7 +838,7 @@ def create_character_with_accessories(user_id, output_file=None):
         # Обеспечиваем наличие папки temp
         os.makedirs('temp', exist_ok=True)
         # Открываем одно соединение для всех запросов
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         # Получаем фон и аксессуары одним запросом
@@ -964,7 +964,7 @@ def create_character_with_single_accessory(user_id, accessory_id, output_file='t
             return None
         
         # Получаем информацию об аксессуаре
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('SELECT image_file FROM accessories WHERE accessory_id = ?', (accessory_id,))
         result = cursor.fetchone()
@@ -1043,7 +1043,7 @@ def create_accessory_preview_with_background(user_id, accessory_id, output_file=
             return None
         
         # Получаем аксессуар
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('SELECT image_file FROM accessories WHERE accessory_id = ?', (accessory_id,))
         result = cursor.fetchone()
@@ -1095,7 +1095,7 @@ def create_background_preview(user_id, background_id, output_file='temp/temp_bac
         # Обеспечиваем наличие папки temp
         os.makedirs('temp', exist_ok=True)
         # Загружаем фон
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('SELECT image_file FROM backgrounds WHERE background_id = ?', (background_id,))
         result = cursor.fetchone()
@@ -1722,7 +1722,7 @@ async def handle_shop_toggle_accessory(update: Update, context: ContextTypes.DEF
     
     try:
         # Получаем тип аксессуара для снятия
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('SELECT type FROM accessories WHERE accessory_id = ?', (accessory_id,))
         result = cursor.fetchone()
@@ -1763,7 +1763,7 @@ async def handle_shop_toggle_background(update: Update, context: ContextTypes.DE
         # Проверяем, применен ли фон
         equipped = is_background_equipped(user_id, background_id)
         
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         if equipped:
@@ -1877,7 +1877,7 @@ async def handle_acc_view_details(update: Update, context: ContextTypes.DEFAULT_
     money = user[5]
     
     # Получаем информацию об аксессуаре
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM accessories WHERE accessory_id = ?', (accessory_id,))
     acc = cursor.fetchone()
@@ -1999,7 +1999,7 @@ async def handle_acc_equip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         # Получаем тип аксессуара
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('SELECT type FROM accessories WHERE accessory_id = ?', (accessory_id,))
         result = cursor.fetchone()
@@ -2048,7 +2048,7 @@ async def handle_bg_view_selection(update: Update, context: ContextTypes.DEFAULT
     money = user[5]
     
     # Получаем информацию о фоне
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM backgrounds WHERE background_id = ?', (background_id,))
     bg = cursor.fetchone()
@@ -2159,7 +2159,7 @@ async def handle_bg_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Проверяем, применен ли фон
         equipped = is_background_equipped(user_id, background_id)
         
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         if equipped:

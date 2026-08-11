@@ -33,7 +33,7 @@ from registration import (
     update_user_disable_news_notifications, update_user_disable_system_notifications,
     update_user_disable_referral_notifications, is_referral_notifications_disabled,
     get_news_subscribed_user_ids,
-    get_user_activity_logs, log_financial_transaction, is_admin
+    get_user_activity_logs, log_financial_transaction, is_admin, DB_PATH
 )
 from utils import safe_delete_message, format_money, parse_amount, set_global_bot
 
@@ -149,7 +149,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # создаем клавиатуру
     keyboard = [
-        [InlineKeyboardButton("🎧 связаться с поддержкой", url="https://t.me/gangstasupport_bot")]
+        [InlineKeyboardButton("🎧 связаться с поддержкой", url="https://t.me/gangstasupport_bot")],
+        [
+            InlineKeyboardButton("📜 оферта", url="https://telegra.ph/PUBLICHNAYA-OFERTA-POLZOVATELSKOE-SOGLASHENIE-08-11"),
+            InlineKeyboardButton("🔒 приватность", url="https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-08-11-81")
+        ]
     ]
     
     # если пользователь админ, добавляем кнопку админ команд
@@ -503,7 +507,7 @@ async def toggle_admin_status(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # Переключаем статус
     is_admin = target_user[6]
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     if is_admin:
@@ -665,7 +669,7 @@ async def toggle_gangster_plus(update: Update, context: ContextTypes.DEFAULT_TYP
     current_plus = target_user[18] if len(target_user) > 18 else False
     new_plus = not current_plus
     
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET is_gangster_plus = ? WHERE user_id = ?', (new_plus, target_user_id))
     conn.commit()
@@ -693,7 +697,7 @@ async def confirm_transfer_immediate(update: Update, context: ContextTypes.DEFAU
     # выполняем перевод в одной транзакции
     try:
         # создаем одно соединение для всей операции
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False, timeout=30)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
         cursor = conn.cursor()
 
         # начинаем транзакцию
@@ -801,7 +805,7 @@ async def confirm_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # выполняем перевод в одной транзакции
     try:
         # создаем одно соединение для всей операции
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False, timeout=30)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
         cursor = conn.cursor()
 
         # начинаем транзакцию
@@ -1161,7 +1165,7 @@ async def add_admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     # делаем пользователя админом
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET is_admin = TRUE WHERE user_id = ?', (target_user[0],))
     conn.commit()
@@ -1234,7 +1238,7 @@ async def remove_admin_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     
     # снимаем админку
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET is_admin = FALSE WHERE user_id = ?', (target_user[0],))
     conn.commit()
@@ -1655,7 +1659,7 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
             return
 
         # обновляем имя в базе
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('UPDATE users SET name = ? WHERE user_id = ?', (new_name, target_user_id))
         conn.commit()
@@ -2907,7 +2911,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # функция для обновления username главного админа
 def update_main_admin_username(user_id, username):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET username = ? WHERE user_id = ?', (username, user_id))
     conn.commit()

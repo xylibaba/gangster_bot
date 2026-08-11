@@ -21,6 +21,27 @@ logger = logging.getLogger(__name__)
 # используем локальные файлы или вообще убираем фото
 USE_PHOTOS = True
 
+# Конфигурация папки и пути к базе данных (для BotHost и других хостингов)
+DATA_DIR = 'data'
+os.makedirs(DATA_DIR, exist_ok=True)
+DB_PATH = os.path.join(DATA_DIR, 'gangster_bot.db')
+
+# Автоматический перенос локальной БД из корня в папку data при первом старте
+_old_db = 'gangster_bot.db'
+_old_db_bak = 'gangster_bot.db.bak'
+if not os.path.exists(DB_PATH):
+    import shutil
+    if os.path.exists(_old_db):
+        try:
+            shutil.move(_old_db, DB_PATH)
+        except Exception:
+            pass
+    elif os.path.exists(_old_db_bak):
+        try:
+            shutil.copy(_old_db_bak, DB_PATH)
+        except Exception:
+            pass
+
 # кэш для проверки существования фото файлов
 photo_cache = {}
 
@@ -39,7 +60,7 @@ def is_cleaning_in_progress(context: ContextTypes.DEFAULT_TYPE, user_id: int):
 
 # инициализация базы данных - ИСПРАВЛЕННАЯ ВЕРСИЯ (без удаления таблиц)
 def init_db():
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute("PRAGMA journal_mode=WAL;")
@@ -371,7 +392,7 @@ def init_db():
 
 # функции для временного бана
 def temp_ban_user(user_id, duration_seconds, banned_by_admin_id=None, reason=""):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         UPDATE users 
@@ -450,7 +471,7 @@ def can_ban_user(admin_id, target_id):
 
 # функция для логирования действий админов
 def log_admin_action(admin_id, action, target_id=None, details=""):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     cursor.execute('''
@@ -462,7 +483,7 @@ def log_admin_action(admin_id, action, target_id=None, details=""):
 
 def init_financial_logs_db():
     """Инициализация таблицы логирования финансовых операций"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS financial_logs (
@@ -481,7 +502,7 @@ def log_financial_transaction(user_id: int, action_type: str, amount: int, detai
     """Логирует финансовую операцию пользователя и удаляет логи старше 7 дней"""
     try:
         init_financial_logs_db()
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         current_time = time.time()
         
@@ -502,7 +523,7 @@ def log_financial_transaction(user_id: int, action_type: str, amount: int, detai
 def get_user_activity_logs(user_id: int, limit: int = 30):
     """Получает логи финансовой активности пользователя за последние 7 дней"""
     init_financial_logs_db()
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     seven_days_ago = time.time() - 604800
@@ -570,7 +591,7 @@ def is_nickname_valid(nickname: str) -> tuple:
     return True, "✅ имя допустимо!"
 
 def get_user(user_id):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE user_id = ?', (user_id,))
     user = cursor.fetchone()
@@ -603,7 +624,7 @@ def is_admin(user_id):
     return user and (user[6] or user[7])  # is_admin (индекс 6) или is_main_admin (индекс 7)
 
 def save_user(user_data):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     # Если передано меньше полей, дополняем значениями по умолчанию
@@ -636,7 +657,7 @@ def save_user(user_data):
 
 # функция для назначения админа
 def make_admin(user_id):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     # Назначаем админом БЕЗ изменения баланса
     cursor.execute('UPDATE users SET is_admin = TRUE WHERE user_id = ?', (user_id,))
@@ -644,7 +665,7 @@ def make_admin(user_id):
     conn.close()
 
 def get_user_stats(user_id):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -664,7 +685,7 @@ def get_user_stats(user_id):
     return stats
 
 def update_user_stats(user_id, shit_cleaned=0, milk_collected=0, money_earned=0):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     stats = get_user_stats(user_id)
@@ -697,7 +718,7 @@ def update_user_stats(user_id, shit_cleaned=0, milk_collected=0, money_earned=0)
         add_referral_job_earnings(user_id, money_earned)
 
 def update_user_money(user_id, amount, check_balance=False):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -731,7 +752,7 @@ def ban_user(user_id):
     update_user_field(user_id, 'banned', True)
 
 def unban_user(user_id):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET banned = FALSE, ban_duration = 0, ban_start_time = 0, banned_by = NULL, ban_reason = "" WHERE user_id = ?', (user_id,))
     conn.commit()
@@ -740,7 +761,7 @@ def unban_user(user_id):
 # функции для администраторской валюты
 def update_admin_currency(user_id, amount):
     """Обновить баланс администраторской валюты"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -783,7 +804,7 @@ def get_admin_currency(user_id):
     """Получить баланс администраторской валюты"""
     try:
         # Всегда берем свежие данные из БД
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         # Прямой запрос из БД для свежих данных
@@ -816,7 +837,7 @@ def can_exchange_admin_currency(user_id):
     try:
         MAX_EXCHANGE_PER_WEEK = 5
         
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -853,7 +874,7 @@ def get_exchange_remaining_time(user_id):
     try:
         MAX_EXCHANGE_PER_WEEK = 5
         
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -893,7 +914,7 @@ def get_exchange_remaining_coins(user_id):
     try:
         MAX_EXCHANGE_PER_WEEK = 5
         
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         cursor.execute("""
@@ -941,7 +962,7 @@ def exchange_admin_currency_to_money(user_id, amount):
     if amount > MAX_EXCHANGE_PER_WEEK:
         return None
     
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -1020,7 +1041,7 @@ def exchange_admin_currency_to_money(user_id, amount):
 
 def add_admin_warning(user_id):
     """Добавить предупреждение админу"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -1060,7 +1081,7 @@ def get_admin_warnings(user_id):
 
 def reset_admin_warnings(user_id):
     """Сбросить предупреждения админа"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET admin_warnings = 0 WHERE user_id = ?', (user_id,))
     conn.commit()
@@ -1084,7 +1105,7 @@ def is_user_banned(user_id):
 
 # функция для записи перевода в историю
 def log_money_transfer(from_user_id, to_user_id, amount):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO money_transfers (from_user_id, to_user_id, amount)
@@ -1132,7 +1153,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, main_admin_i
     # обновляем username при каждом старте
     username = update.effective_user.username
     if username:
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('UPDATE users SET username = ? WHERE user_id = ?', (username, user_id))
         conn.commit()
@@ -1173,13 +1194,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE, main_admin_i
         return
     
     keyboard = [
-        [InlineKeyboardButton("зарегистрироваться", callback_data="register")]
+        [InlineKeyboardButton("зарегистрироваться", callback_data="register")],
+        [
+            InlineKeyboardButton("📜 оферта", url="https://telegra.ph/PUBLICHNAYA-OFERTA-POLZOVATELSKOE-SOGLASHENIE-08-11"),
+            InlineKeyboardButton("🔒 приватность", url="https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-08-11-81")
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     message_text = """👋 здарова! я тут заметил, что у тебя еще нет человечка в бот гангстер.
-    
-    для начала регистрации, жми кнопку ниже"""
+
+💡 нажимая «зарегистрироваться», вы принимаете условия Пользовательского соглашения и Политики конфиденциальности.
+
+для начала регистрации, жми кнопку ниже"""
     
     if update.message:
         if USE_PHOTOS:
@@ -1592,7 +1619,7 @@ async def finish_registration(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     # Создаем запись о надетых предметах с дефолтным фоном и скином
     try:
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         # Получаем ID скина на основе выбранного цвета
@@ -1763,7 +1790,7 @@ async def handle_all_text_messages(update: Update, context: ContextTypes.DEFAULT
 
 # функция для обновления username пользователя
 def update_user_username(user_id, username):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET username = ? WHERE user_id = ?', (username, user_id))
     conn.commit()
@@ -1771,7 +1798,7 @@ def update_user_username(user_id, username):
 
 # функция для поиска пользователя по username
 def get_user_by_username(username):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False, timeout=30)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE username = ?', (username,))
     user = cursor.fetchone()
@@ -1780,7 +1807,7 @@ def get_user_by_username(username):
 
 # функция для поиска пользователя по имени
 def get_user_by_name(name):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False, timeout=30)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False, timeout=30)
     cursor = conn.cursor()
     cursor.execute('SELECT * FROM users WHERE name = ?', (name,))
     user = cursor.fetchone()
@@ -1800,7 +1827,7 @@ def update_user_field(user_id, field_name, value):
     if field_name not in allowed_fields:
         raise ValueError(f"Invalid field: {field_name}")
     
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute(f'UPDATE users SET {field_name} = ? WHERE user_id = ?', (value, user_id))
@@ -1821,7 +1848,7 @@ def update_user_color(user_id, new_color):
     
     # Обновляем скин в таблице user_skin на основе цвета
     try:
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         # Получаем ID скина на основе цвета
@@ -1852,7 +1879,7 @@ def update_user_gender(user_id, new_gender):
 
 # функция для обновления настройки отключения подтверждения переводов
 def update_user_disable_transfer_confirmation(user_id, disable):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET disable_transfer_confirmation = ? WHERE user_id = ?', (disable, user_id))
     conn.commit()
@@ -1860,7 +1887,7 @@ def update_user_disable_transfer_confirmation(user_id, disable):
 
 # функция для обновления настройки отключения уведомлений о переводах
 def update_user_disable_transfer_notifications(user_id, disable):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET disable_transfer_notifications = ? WHERE user_id = ?', (disable, user_id))
     conn.commit()
@@ -1868,7 +1895,7 @@ def update_user_disable_transfer_notifications(user_id, disable):
 
 # функция для обновления настройки отключения новостных уведомлений
 def update_user_disable_news_notifications(user_id, disable):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET disable_news_notifications = ? WHERE user_id = ?', (disable, user_id))
     conn.commit()
@@ -1876,7 +1903,7 @@ def update_user_disable_news_notifications(user_id, disable):
 
 # функция для обновления настройки отключения системных уведомлений
 def update_user_disable_system_notifications(user_id, disable):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET disable_system_notifications = ? WHERE user_id = ?', (disable, user_id))
     conn.commit()
@@ -1884,7 +1911,7 @@ def update_user_disable_system_notifications(user_id, disable):
 
 # функция для обновления настройки отключения уведомлений о мамонтах (рефералах)
 def update_user_disable_referral_notifications(user_id, disable):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET disable_referral_notifications = ? WHERE user_id = ?', (disable, user_id))
     conn.commit()
@@ -1892,7 +1919,7 @@ def update_user_disable_referral_notifications(user_id, disable):
 
 # функция для проверки, отключены ли уведомления о мамонтах
 def is_referral_notifications_disabled(user_id):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT disable_referral_notifications FROM users WHERE user_id = ?', (user_id,))
@@ -1907,7 +1934,7 @@ def is_referral_notifications_disabled(user_id):
 
 def get_all_user_ids():
     """Получить список всех зарегистрированных не забаненных пользователей для рассылки"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT user_id FROM users WHERE banned = FALSE')
@@ -1921,7 +1948,7 @@ def get_all_user_ids():
 
 def get_news_subscribed_user_ids():
     """Получить список пользователей для обычной новостной рассылки (не забаненные и с включенными новостными уведомлениями)"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT user_id FROM users WHERE banned = FALSE AND (disable_news_notifications = FALSE OR disable_news_notifications IS NULL)')
@@ -1935,7 +1962,7 @@ def get_news_subscribed_user_ids():
 
 def get_user_boost_2x_until(user_id: int) -> float:
     """Получает время окончания х2 буста заработка"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT boost_2x_until FROM users WHERE user_id = ?', (user_id,))
@@ -1948,7 +1975,7 @@ def get_user_boost_2x_until(user_id: int) -> float:
 
 def add_user_2x_boost(user_id: int, duration_seconds: int = 86400):
     """Активирует или продлевает х2 со всего заработка"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT boost_2x_until FROM users WHERE user_id = ?', (user_id,))
@@ -1969,7 +1996,7 @@ def add_user_2x_boost(user_id: int, duration_seconds: int = 86400):
 def get_user_earnings_multiplier(user_id: int) -> float:
     """Вычисляет итоговый множитель дохода пользователя (учитывает Гангстер Плюс x4 и Буст x2)"""
     multiplier = 1.0
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('SELECT is_gangster_plus, boost_2x_until, gangster_plus_until FROM users WHERE user_id = ?', (user_id,))
@@ -1993,7 +2020,7 @@ def get_user_earnings_multiplier(user_id: int) -> float:
 
 def give_user_skin(user_id: int, skin_id: int):
     """Выдает пользователю скин во владение"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('INSERT OR IGNORE INTO user_skins (user_id, skin_id) VALUES (?, ?)', (user_id, skin_id))

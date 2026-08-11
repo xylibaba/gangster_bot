@@ -13,7 +13,7 @@ import httpx
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, LabeledPrice
 from telegram.ext import ContextTypes
-from registration import get_user, update_user_money
+from registration import get_user, update_user_money, DB_PATH
 from utils import safe_delete_message, format_money, maybe_send_channel_reminder
 from scam import add_referral_donation_earnings
 
@@ -123,6 +123,10 @@ async def show_pack(update: Update, context: ContextTypes.DEFAULT_TYPE, index: i
             InlineKeyboardButton("⬅️", callback_data="pack_prev"),
             InlineKeyboardButton(buy_button_text, callback_data=f"pack_buy_{index}"),
             InlineKeyboardButton("➡️", callback_data="pack_next")
+        ],
+        [
+            InlineKeyboardButton("📜 оферта", url="https://telegra.ph/PUBLICHNAYA-OFERTA-POLZOVATELSKOE-SOGLASHENIE-08-11"),
+            InlineKeyboardButton("🔒 приватность", url="https://telegra.ph/POLITIKA-KONFIDENCIALNOSTI-08-11-81")
         ]
     ]
     if has_plus:
@@ -499,7 +503,7 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
 
 # функция добавления записи о донате в бд
 def add_donation(user_id, amount, currency, payment_system, status):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -517,7 +521,7 @@ def add_donation(user_id, amount, currency, payment_system, status):
 
 def activate_gangster_plus(user_id):
     try:
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         # Проверяем что пользователь существует
@@ -540,7 +544,7 @@ def activate_gangster_plus(user_id):
 def is_gangster_plus_active(user_id):
     """Проверяет, активна ли подписка гангстер плюс"""
     try:
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute("SELECT is_gangster_plus FROM users WHERE user_id = ?", (user_id,))
         result = cursor.fetchone()
@@ -607,7 +611,7 @@ async def apply_pack_rewards(user_id: int, pack_index: int) -> str:
     if pack['is_subscription']:
         activate_gangster_plus(user_id)
         now = time.time()
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         try:
             cursor.execute('SELECT gangster_plus_until FROM users WHERE user_id = ?', (user_id,))
@@ -802,7 +806,7 @@ async def check_all_pending_crypto_payments(context: ContextTypes.DEFAULT_TYPE):
 
 def init_promocodes_db():
     """Инициализация таблиц БД для промокодов"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
@@ -843,7 +847,7 @@ def activate_promocode(user_id: int, code_str: str) -> tuple[bool, str]:
     if not code_str:
         return False, "❌ введите промокод!"
         
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     
     try:
@@ -910,7 +914,7 @@ async def prompt_promocode(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def process_gangster_plus_weekly_payouts(context: ContextTypes.DEFAULT_TYPE):
     """Фоновая задача для выдачи 5кк каждую неделю подписчикам Гангстер Плюс и проверки срока подписок"""
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     try:
         now = time.time()

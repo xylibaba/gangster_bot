@@ -17,6 +17,10 @@ __pycache__/
 .idea/
 *.swp
 
-# Временные файлы
+# Временные файлы и базы данных
 temp/
 *.tmp
+*.db
+*.sqlite
+*.sqlite3
+data/*.db

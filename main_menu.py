@@ -14,7 +14,7 @@ import asyncio
 import logging
 from telegram import Update, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove, InputMediaPhoto, InputFile
 from telegram.ext import ContextTypes
-from registration import get_user, get_user_stats
+from registration import get_user, get_user_stats, DB_PATH
 from utils import format_money, safe_delete_message, maybe_send_channel_reminder
 from accessories import get_user_skin, get_user_skin_name, get_user_equipped_names, get_user_background_name, create_character_with_accessories
 
@@ -523,7 +523,7 @@ def is_main_admin(user_id):
 
 # функция для назначения админа
 def make_admin(user_id):
-    conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE users SET is_admin = TRUE WHERE user_id = ?', (user_id,))
     conn.commit()
@@ -978,7 +978,7 @@ def get_top_balance_text():
         return top_balance_cache['text']
         
     try:
-        conn = sqlite3.connect('gangster_bot.db', check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
         # Получаем топ 5 не забаненных пользователей по балансу (исключая главного админа)

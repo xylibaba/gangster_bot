@@ -12,7 +12,7 @@ import time
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import ContextTypes
-from registration import get_user, update_user_money, get_user_by_username, get_user_by_name, log_financial_transaction
+from registration import get_user, update_user_money, get_user_by_username, get_user_by_name, log_financial_transaction, DB_PATH
 from utils import format_money, maybe_send_channel_reminder
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ HOMES = [
 
 def init_homes_db():
     """Инициализация таблиц домов, подселения и шкафа"""
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     
     # Таблица владения домом
@@ -88,7 +88,7 @@ init_homes_db()
 
 def get_user_home(user_id):
     """Получает дом, которым владеет пользователь"""
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT user_id, home_id, use_as_background FROM user_homes WHERE user_id = ?', (user_id,))
     row = cursor.fetchone()
@@ -102,7 +102,7 @@ def get_home_for_user_or_roommate(user_id):
         return own_home[0], own_home[1], True, bool(own_home[2])
     
     # Проверяем, подселен ли пользователь к кому-то
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT uh.user_id, uh.home_id, uh.use_as_background 
@@ -292,7 +292,7 @@ async def buy_home(update: Update, context: ContextTypes.DEFAULT_TYPE, home_inde
     update_user_money(user_id, -home['price'])
     log_financial_transaction(user_id, "buy_home", -home['price'], f"покупка дома '{home['name']}'")
     
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('INSERT INTO user_homes (user_id, home_id, use_as_background) VALUES (?, ?, FALSE)', (user_id, home['id']))
     conn.commit()
@@ -334,7 +334,7 @@ async def show_wardrobe_page(update: Update, context: ContextTypes.DEFAULT_TYPE,
     context.user_data['wardrobe_page'] = page
     
     # Получаем содержимое слотов
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT slot_number, accessory_id, is_locked 
@@ -409,7 +409,7 @@ async def handle_slot_click(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         
     owner_id, home_id, is_owner, use_bg = home_info
     
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT accessory_id, is_locked FROM home_wardrobe_slots WHERE owner_id = ? AND slot_number = ?', (owner_id, slot_number))
     row = cursor.fetchone()
@@ -439,7 +439,7 @@ async def show_deposit_accessory_menu(update: Update, context: ContextTypes.DEFA
     owner_id = home_info[0] if home_info else user_id
     
     # Получаем купленные пользователем аксессуары, которые НЕ находятся уже в каком-либо шкафу
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         SELECT DISTINCT a.accessory_id, a.name 
@@ -481,7 +481,7 @@ async def deposit_accessory_to_slot(update: Update, context: ContextTypes.DEFAUL
     # Если предмет надет на персонажа — снимаем его!
     from accessories import is_accessory_equipped, unequip_accessory, clear_character_cache
     if is_accessory_equipped(user_id, accessory_id):
-        conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+        conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
         cursor = conn.cursor()
         cursor.execute('SELECT type FROM accessories WHERE accessory_id = ?', (accessory_id,))
         acc_row = cursor.fetchone()
@@ -489,7 +489,7 @@ async def deposit_accessory_to_slot(update: Update, context: ContextTypes.DEFAUL
         if acc_row:
             unequip_accessory(user_id, acc_row[0])
             
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO home_wardrobe_slots (owner_id, slot_number, accessory_id, is_locked)
@@ -507,7 +507,7 @@ async def deposit_accessory_to_slot(update: Update, context: ContextTypes.DEFAUL
 async def show_occupied_slot_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, slot_number, accessory_id, is_locked, is_owner):
     query = update.callback_query
     
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT name FROM accessories WHERE accessory_id = ?', (accessory_id,))
     row = cursor.fetchone()
@@ -547,7 +547,7 @@ async def withdraw_accessory_from_slot(update: Update, context: ContextTypes.DEF
         
     owner_id, home_id, is_owner, use_bg = home_info
     
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT accessory_id, is_locked FROM home_wardrobe_slots WHERE owner_id = ? AND slot_number = ?', (owner_id, slot_number))
     row = cursor.fetchone()
@@ -594,7 +594,7 @@ async def toggle_slot_lock(update: Update, context: ContextTypes.DEFAULT_TYPE, s
         
     owner_id = home_info[0]
     
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT is_locked FROM home_wardrobe_slots WHERE owner_id = ? AND slot_number = ?', (owner_id, slot_number))
     row = cursor.fetchone()
@@ -671,7 +671,7 @@ async def toggle_home_background(update: Update, context: ContextTypes.DEFAULT_T
     current_use = bool(own_home[2])
     new_use = not current_use
     
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('UPDATE user_homes SET use_as_background = ? WHERE user_id = ?', (new_use, user_id))
     if new_use:
@@ -701,7 +701,7 @@ async def sell_home(update: Update, context: ContextTypes.DEFAULT_TYPE):
     home_config = next((h for h in HOMES if h['id'] == home_id), HOMES[0])
     refund_amount = int(home_config['price'] * 0.75)
     
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     
     # Возвращаем заблокированные/лежащие вещи в инвентарь пользователя
@@ -776,7 +776,7 @@ async def finish_invite_roommate(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text("❌ вы не можете подселить самого себя!")
         return
         
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     try:
         cursor.execute('INSERT INTO home_roommates (owner_id, roommate_id) VALUES (?, ?)', (user_id, target_id))
@@ -802,7 +802,7 @@ async def manage_roommates(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('SELECT roommate_id FROM home_roommates WHERE owner_id = ?', (user_id,))
     roommate_ids = [r[0] for r in cursor.fetchall()]
@@ -832,7 +832,7 @@ async def evict_roommate(update: Update, context: ContextTypes.DEFAULT_TYPE, roo
     query = update.callback_query
     user_id = query.from_user.id
     
-    conn = sqlite3.connect('gangster_bot.db', timeout=30.0, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('DELETE FROM home_roommates WHERE owner_id = ? AND roommate_id = ?', (user_id, roommate_id))
     conn.commit()
