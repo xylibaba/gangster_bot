@@ -98,35 +98,40 @@ DEFAULT_ACCESSORIES = [
         "type": "hand",
         "description": "эксклюзивный пистолет за участие в тесте",
         "price": 0,
-        "image_file": "images/accessory_gun.jpg"
+        "image_file": "images/accessory_gun.jpg",
+        "is_available": False
     },
     {
         "name": "молодой",
         "type": "body",
         "description": "эксклюзивный скин молодой из донат-набора",
         "price": 0,
-        "image_file": "images/skins_donation_1.jpg"
+        "image_file": "images/skins_donation_1.jpg",
+        "is_available": False
     },
     {
         "name": "кроссовки BLEN",
         "type": "feet",
         "description": "стильные кроссовки BLEN",
         "price": 150000,
-        "image_file": "images/accesories_1.jpg"
+        "image_file": "images/accesories_1.jpg",
+        "is_available": True
     },
     {
         "name": "джинсы тянки",
         "type": "feet",
         "description": "модные джинсы тянки",
         "price": 200000,
-        "image_file": "images/accesories_2.jpg"
+        "image_file": "images/accesories_2.jpg",
+        "is_available": True
     },
     {
         "name": "крутая футболка",
         "type": "body",
         "description": "эксклюзивная крутая футболка за участие в раздаче",
         "price": 0,
-        "image_file": "images/skins_distribution_1.jpg"
+        "image_file": "images/skins_distribution_1.jpg",
+        "is_available": False
     }
 ]
 
@@ -180,9 +185,17 @@ def init_accessories_and_backgrounds():
             if not cursor.fetchone():
                 cursor.execute('''
                     INSERT INTO accessories (name, type, description, price, image_file, is_available)
-                    VALUES (?, ?, ?, ?, ?, TRUE)
-                ''', (acc['name'], acc['type'], acc['description'], acc['price'], acc['image_file']))
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (acc['name'], acc['type'], acc['description'], acc['price'], acc['image_file'], acc.get('is_available', True)))
+            else:
+                cursor.execute('''
+                    UPDATE accessories SET is_available = ? WHERE name = ? AND type = ?
+                ''', (acc.get('is_available', True), acc['name'], acc['type']))
         
+        # Скрываем донатные и эксклюзивные предметы из магазина
+        cursor.execute("UPDATE accessories SET is_available = FALSE WHERE name IN ('молодой', 'крутая футболка', 'пистолет')")
+        cursor.execute("UPDATE accessories SET is_available = TRUE WHERE name IN ('кроссовки BLEN', 'джинсы тянки')")
+
         # Удаляем устаревшие фоны (НЕ удаляем новые фоны 3_background.jpg и 4_background.jpg)
         cursor.execute("DELETE FROM backgrounds WHERE image_file NOT IN ('images/1_background.jpg', 'images/2_background.jpg', 'images/3_background.jpg', 'images/4_background.jpg', 'images/default_background.jpg')")
 
@@ -291,7 +304,7 @@ def ensure_molodoy_accessory_in_db():
         acc_id = cursor.lastrowid
     else:
         acc_id = row[0]
-        cursor.execute("UPDATE accessories SET image_file = 'images/skins_donation_1.jpg', type = 'body' WHERE accessory_id = ?", (acc_id,))
+        cursor.execute("UPDATE accessories SET image_file = 'images/skins_donation_1.jpg', type = 'body', is_available = FALSE WHERE accessory_id = ?", (acc_id,))
     conn.commit()
     conn.close()
     return acc_id
@@ -2246,7 +2259,7 @@ def get_time_until_distribution_start() -> str:
         return f"{hours} ч. {minutes} мин. {seconds} сек."
 
 def ensure_tshirt_distribution_in_db():
-    """Гарантирует существование аксессуара 'крутая футболка' в БД"""
+    """Гарантирует существование аксессуара 'крутая футболка' в БД (скрыта из магазина)"""
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute("SELECT accessory_id FROM accessories WHERE name = 'крутая футболка'")
@@ -2254,15 +2267,68 @@ def ensure_tshirt_distribution_in_db():
     if not row:
         cursor.execute('''
             INSERT INTO accessories (name, type, description, price, image_file, is_available)
-            VALUES ('крутая футболка', 'body', 'эксклюзивная крутая футболка за участие в раздаче', 0, 'images/skins_distribution_1.jpg', TRUE)
+            VALUES ('крутая футболка', 'body', 'эксклюзивная крутая футболка за участие в раздаче', 0, 'images/skins_distribution_1.jpg', FALSE)
         ''')
         acc_id = cursor.lastrowid
     else:
         acc_id = row[0]
-        cursor.execute("UPDATE accessories SET image_file = 'images/skins_distribution_1.jpg', type = 'body', is_available = TRUE WHERE accessory_id = ?", (acc_id,))
+        cursor.execute("UPDATE accessories SET image_file = 'images/skins_distribution_1.jpg', type = 'body', is_available = FALSE WHERE accessory_id = ?", (acc_id,))
     conn.commit()
     conn.close()
     return acc_id
+
+def create_tshirt_distribution_preview(user_id, output_file=None):
+    """Отрисовывает персонажа (человека) с фоном, одетого ТОЛЬКО в футболку раздачи"""
+    if not PIL_AVAILABLE:
+        return None
+    if not output_file:
+        output_file = f'temp/temp_dist_preview_{user_id}.png'
+    try:
+        os.makedirs('temp', exist_ok=True)
+        
+        # 1. Получаем скин персонажа (человека)
+        skin_path = get_user_skin(user_id)
+        if not os.path.exists(skin_path):
+            return None
+        character_image = Image.open(skin_path).convert('RGBA')
+        
+        # 2. Получаем актуальный фон пользователя или дефолтный
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT b.image_file FROM backgrounds b
+            INNER JOIN user_equipped ue ON b.background_id = ue.background_accessory
+            WHERE ue.user_id = ?
+        ''', (user_id,))
+        bg_row = cursor.fetchone()
+        conn.close()
+        
+        bg_file = bg_row[0] if (bg_row and os.path.exists(bg_row[0])) else 'images/default_background.jpg'
+        if not os.path.exists(bg_file):
+            bg_file = 'images/default_background.jpg'
+            
+        if os.path.exists(bg_file):
+            background_image = Image.open(bg_file).convert('RGBA')
+            if character_image.size != background_image.size:
+                character_image = character_image.resize(background_image.size, Image.Resampling.LANCZOS)
+            base_image = Image.alpha_composite(background_image, character_image)
+        else:
+            base_image = character_image
+            
+        # 3. Накладываем футболку раздачи
+        tshirt_file = 'images/skins_distribution_1.jpg'
+        if os.path.exists(tshirt_file):
+            tshirt_image = Image.open(tshirt_file).convert('RGBA')
+            if tshirt_image.size != base_image.size:
+                tshirt_image = tshirt_image.resize(base_image.size, Image.Resampling.LANCZOS)
+            base_image = Image.alpha_composite(base_image, tshirt_image)
+            
+        base_image = base_image.convert('RGB')
+        base_image.save(output_file, 'PNG')
+        return output_file
+    except Exception as e:
+        logger.error(f"Ошибка создания предпросмотра раздачи: {e}")
+        return None
 
 async def show_tshirt_distribution_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отображает меню раздачи эксклюзивной футболки с предпросмотром на персонаже"""
@@ -2271,7 +2337,7 @@ async def show_tshirt_distribution_menu(update: Update, context: ContextTypes.DE
     
     acc_id = ensure_tshirt_distribution_in_db()
     preview_file = f'temp/temp_dist_preview_{user_id}.png'
-    custom_preview = create_character_with_single_accessory(user_id, acc_id, output_file=preview_file)
+    custom_preview = create_tshirt_distribution_preview(user_id, output_file=preview_file)
     if custom_preview and os.path.exists(custom_preview):
         image_path = custom_preview
     else:
