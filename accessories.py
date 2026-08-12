@@ -1245,21 +1245,18 @@ async def show_shop_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if update.callback_query:
             await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode='html')
-            await update.callback_query.message.reply_text("⚠️ <b>данный раздел требует доработки (аксессуары), поэтому покупка их временно ограничена!</b>", parse_mode='HTML')
         elif update.message:
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='html')
-            await update.message.reply_text("⚠️ <b>данный раздел требует доработки (аксессуары), поэтому покупка их временно ограничена!</b>", parse_mode='HTML')
     except Exception:
         pass
 
 async def _show_accessory_carousel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает карусель аксессуаров (магазин временно закрыт)"""
-    if update.callback_query:
-        await update.callback_query.answer("⚠️ магазин аксессуаров временно недоступен!", show_alert=True)
-    elif update.message:
-        await update.message.reply_text("⚠️ <b>магазин аксессуаров временно недоступен!</b>", parse_mode='HTML')
-    return
-    
+    """Показывает карусель аксессуаров"""
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    if not user:
+        return
+        
     money = user[5]
     accessories = get_all_accessories()
     
@@ -1608,13 +1605,12 @@ async def show_wardrobe_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         pass
 
 async def show_accessories_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает магазин аксессуаров (магазин временно закрыт)"""
-    if update.callback_query:
-        await update.callback_query.answer("⚠️ магазин аксессуаров временно недоступен!", show_alert=True)
-    elif update.message:
-        await update.message.reply_text("⚠️ <b>магазин аксессуаров временно недоступен!</b>", parse_mode='HTML')
-    return
-    
+    """Показывает магазин аксессуаров"""
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    if not user:
+        return
+        
     money = user[5]
     accessories = get_all_accessories()
     
@@ -2269,10 +2265,17 @@ def ensure_tshirt_distribution_in_db():
     return acc_id
 
 async def show_tshirt_distribution_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отображает меню раздачи эксклюзивной футболки с предпросмотром"""
+    """Отображает меню раздачи эксклюзивной футболки с предпросмотром на персонаже"""
     user_id = update.effective_user.id
     bot = context.bot
-    image_path = 'images/skins_distribution_1.jpg'
+    
+    acc_id = ensure_tshirt_distribution_in_db()
+    preview_file = f'temp/temp_dist_preview_{user_id}.png'
+    custom_preview = create_character_with_single_accessory(user_id, acc_id, output_file=preview_file)
+    if custom_preview and os.path.exists(custom_preview):
+        image_path = custom_preview
+    else:
+        image_path = 'images/skins_distribution_1.jpg'
     
     # 1. Если раздача еще НЕ началась (до 13 августа 12:00 МСК)
     if not is_distribution_open():
