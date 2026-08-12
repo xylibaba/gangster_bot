@@ -53,7 +53,8 @@ from accessories import (init_accessories_and_backgrounds, show_wardrobe_menu, s
                          show_shop_main, handle_shop_accessories_start, handle_shop_backgrounds_start, handle_shop_menu,
                          handle_shop_acc_nav, handle_shop_bg_nav, handle_shop_buy_accessory, handle_shop_buy_background, 
                          handle_shop_toggle_accessory, handle_shop_toggle_background, clear_character_cache,
-                         get_accessory_id_by_name, is_accessory_equipped, equip_accessory, unequip_accessory)
+                         get_accessory_id_by_name, is_accessory_equipped, equip_accessory, unequip_accessory,
+                         show_tshirt_distribution_menu, claim_tshirt_distribution)
 import homes
 import business
 
@@ -1928,6 +1929,10 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         handled = True
         await prompt_promocode(update, context)
         return
+    elif text in ["раздача 🎁", "🎁 раздача", "раздача"]:
+        handled = True
+        await show_tshirt_distribution_menu(update, context)
+        return
     elif text in ["карта", "🗺️ карта"]:
         handled = True
         await update.message.reply_text("⚠️ <b>раздел карта временно недоступен!</b>", parse_mode='HTML')
@@ -2814,7 +2819,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif data.startswith("acc_equip_"):
                 await handle_acc_equip(update, context)
         
-        # обработка просмотра фонов
+        # обработка раздачи футболки
+        elif data in ["claim_tshirt_distribution", "refresh_tshirt_distribution", "already_claimed_tshirt", "back_to_main_menu"]:
+            if data == "claim_tshirt_distribution":
+                await claim_tshirt_distribution(update, context)
+            elif data == "refresh_tshirt_distribution":
+                await show_tshirt_distribution_menu(update, context)
+            elif data == "already_claimed_tshirt":
+                await query.answer("ты уже забрал эту футболку!", show_alert=True)
+            elif data == "back_to_main_menu":
+                from main_menu import show_main_menu
+                await show_main_menu(update, context)
+
+        # обработка просмотров фонов
         elif data.startswith("bg_"):
             from accessories import handle_bg_view_selection, handle_bg_buy, handle_bg_toggle
             if data.startswith("bg_view_"):

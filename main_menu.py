@@ -193,7 +193,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, unk
     # клавиатура главного меню
     keyboard = [
         [KeyboardButton("работа ✅"), KeyboardButton("казино ✅"), KeyboardButton("магазин")],
-        [KeyboardButton("дом ✅"), KeyboardButton("бизнес"), KeyboardButton("донат ✅"), KeyboardButton("карта")],
+        [KeyboardButton("дом ✅"), KeyboardButton("бизнес"), KeyboardButton("донат ✅"), KeyboardButton("раздача 🎁")],
         [KeyboardButton("🔄 ✅"), KeyboardButton("🏆 топ ✅"), KeyboardButton("помощь ✅"), KeyboardButton("⚙️ ✅")]
     ]
     reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)

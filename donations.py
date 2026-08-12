@@ -11,7 +11,7 @@ import os
 import time
 import httpx
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, LabeledPrice
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, LabeledPrice, InputMediaPhoto
 from telegram.ext import ContextTypes
 from registration import get_user, update_user_money, DB_PATH
 from utils import safe_delete_message, format_money, maybe_send_channel_reminder
@@ -136,10 +136,14 @@ async def show_pack(update: Update, context: ContextTypes.DEFAULT_TYPE, index: i
     
     if update.callback_query:
         try:
-            # пытаемся обновить подпись, если это сообщение с фото
-            await update.callback_query.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode='html')
+            # Обновляем фото и подпись медиа-сообщения
+            with open(pack['photo'], 'rb') as photo:
+                await update.callback_query.edit_message_media(
+                    media=InputMediaPhoto(media=photo, caption=text, parse_mode='html'),
+                    reply_markup=reply_markup
+                )
         except Exception:
-            # если ошибка (например, сообщение без фото), удаляем и шлем новое
+            # если ошибка, удаляем и отправляем заново
             await safe_delete_message(context, update.effective_chat.id, update.callback_query.message.message_id)
             try:
                 with open(pack['photo'], 'rb') as photo:

@@ -8,6 +8,7 @@ if sys.platform == "win32":
 import logging
 import os
 import sqlite3
+import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
 from telegram.ext import ContextTypes
 from registration import get_user, update_user_money, is_admin, DB_PATH
@@ -105,6 +106,27 @@ DEFAULT_ACCESSORIES = [
         "description": "эксклюзивный скин молодой из донат-набора",
         "price": 0,
         "image_file": "images/skins_donation_1.jpg"
+    },
+    {
+        "name": "кроссовки BLEN",
+        "type": "feet",
+        "description": "стильные кроссовки BLEN",
+        "price": 150000,
+        "image_file": "images/accesories_1.jpg"
+    },
+    {
+        "name": "джинсы тянки",
+        "type": "feet",
+        "description": "модные джинсы тянки",
+        "price": 200000,
+        "image_file": "images/accesories_2.jpg"
+    },
+    {
+        "name": "крутая футболка",
+        "type": "body",
+        "description": "эксклюзивная крутая футболка за участие в раздаче",
+        "price": 0,
+        "image_file": "images/skins_distribution_1.jpg"
     }
 ]
 
@@ -121,6 +143,18 @@ DEFAULT_BACKGROUNDS = [
         "description": "легендарные зеленые холмы Windows XP",
         "price": 250000,
         "image_file": "images/2_background.jpg"
+    },
+    {
+        "name": "грин скрин",
+        "description": "зеленый хромакей фон грин скрин",
+        "price": 250000,
+        "image_file": "images/3_background.jpg"
+    },
+    {
+        "name": "розыск",
+        "description": "плакат розыска полицией",
+        "price": 300000,
+        "image_file": "images/4_background.jpg"
     }
 ]
 
@@ -149,8 +183,8 @@ def init_accessories_and_backgrounds():
                     VALUES (?, ?, ?, ?, ?, TRUE)
                 ''', (acc['name'], acc['type'], acc['description'], acc['price'], acc['image_file']))
         
-        # Удаляем устаревшие фоны
-        cursor.execute("DELETE FROM backgrounds WHERE image_file NOT IN ('images/1_background.jpg', 'images/2_background.jpg', 'images/default_background.jpg')")
+        # Удаляем устаревшие фоны (НЕ удаляем новые фоны 3_background.jpg и 4_background.jpg)
+        cursor.execute("DELETE FROM backgrounds WHERE image_file NOT IN ('images/1_background.jpg', 'images/2_background.jpg', 'images/3_background.jpg', 'images/4_background.jpg', 'images/default_background.jpg')")
 
         # Добавляем стандартные фоны (проверяем что их еще нет)
         for bg in DEFAULT_BACKGROUNDS:
@@ -853,8 +887,8 @@ def create_character_with_accessories(user_id, output_file=None):
         accessory_ids = []
         if equipped_result:
             bg_id = equipped_result[0]
-            # Порядок наложения слоев: body (одежда/скин) -> head -> feet -> hand (пистолет поверх всего)
-            accessory_ids = [equipped_result[3], equipped_result[1], equipped_result[4], equipped_result[2]]
+            # Порядок наложения слоев: feet (джинсы/обувь) -> body (футболка поверх джинс) -> head (голова/маска) -> hand (оружие поверх всего)
+            accessory_ids = [equipped_result[4], equipped_result[3], equipped_result[1], equipped_result[2]]
         
         bg_file = None
         # 1. Проверяем, включен ли ДОМ как фон (он имеет приоритет, если пользователь включил опцию 'дом как фон')
@@ -2185,3 +2219,262 @@ async def handle_bg_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Ошибка при переключении фона: {e}")
         await query.answer("❌ произошла ошибка!", show_alert=True)
+
+# ==========================================
+# 🎁 РАЗДАЧА «КРУТАЯ ФУТБОЛКА»
+# ==========================================
+
+DISTRIBUTION_START_TIME = datetime.datetime(2026, 8, 13, 12, 0, 0)
+
+def is_distribution_open() -> bool:
+    """Проверяет, открыта ли раздача по времени (13 августа 2026 года в 12:00 МСК)"""
+    return datetime.datetime.now() >= DISTRIBUTION_START_TIME
+
+def get_time_until_distribution_start() -> str:
+    """Возвращает отформатированную строку обратного отсчета до старта раздачи"""
+    now = datetime.datetime.now()
+    diff = DISTRIBUTION_START_TIME - now
+    if diff.total_seconds() <= 0:
+        return "00 ч. 00 мин. 00 сек."
+    
+    total_seconds = int(diff.total_seconds())
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    
+    if hours >= 24:
+        days = hours // 24
+        rem_hours = hours % 24
+        return f"{days} дн. {rem_hours} ч. {minutes} мин."
+    else:
+        return f"{hours} ч. {minutes} мин. {seconds} сек."
+
+def ensure_tshirt_distribution_in_db():
+    """Гарантирует существование аксессуара 'крутая футболка' в БД"""
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT accessory_id FROM accessories WHERE name = 'крутая футболка'")
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute('''
+            INSERT INTO accessories (name, type, description, price, image_file, is_available)
+            VALUES ('крутая футболка', 'body', 'эксклюзивная крутая футболка за участие в раздаче', 0, 'images/skins_distribution_1.jpg', TRUE)
+        ''')
+        acc_id = cursor.lastrowid
+    else:
+        acc_id = row[0]
+        cursor.execute("UPDATE accessories SET image_file = 'images/skins_distribution_1.jpg', type = 'body', is_available = TRUE WHERE accessory_id = ?", (acc_id,))
+    conn.commit()
+    conn.close()
+    return acc_id
+
+async def show_tshirt_distribution_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отображает меню раздачи эксклюзивной футболки с предпросмотром"""
+    user_id = update.effective_user.id
+    bot = context.bot
+    image_path = 'images/skins_distribution_1.jpg'
+    
+    # 1. Если раздача еще НЕ началась (до 13 августа 12:00 МСК)
+    if not is_distribution_open():
+        countdown_str = get_time_until_distribution_start()
+        text = (
+            "🔒 <b>раздача еще не началась!</b>\n\n"
+            "раздача эксклюзивной <b>«крутая футболка»</b> откроется совсем скоро!\n\n"
+            f"⏳ <b>до старта осталось:</b> <code>{countdown_str}</code>\n"
+            "⏰ <b>дата старта:</b> 13 августа 2026 в 12:00 (МСК)\n\n"
+            "💡 <i>ты пока можешь подписаться на наш канал @botgangster и приглашать друзей по своей реф. ссылке, чтобы сразу забрать футболку после старта!</i>"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📢 наш канал", url="https://t.me/botgangster")],
+            [InlineKeyboardButton("🔄 обновить таймер", callback_data="refresh_tshirt_distribution")],
+            [InlineKeyboardButton("⬅️ главное меню", callback_data="back_to_main_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.callback_query:
+            query = update.callback_query
+            try:
+                with open(image_path, 'rb') as photo:
+                    await query.edit_message_media(
+                        media=InputMediaPhoto(media=photo, caption=text, parse_mode='HTML'),
+                        reply_markup=reply_markup
+                    )
+            except Exception:
+                await safe_delete_message(context, query.message.chat_id, query.message.message_id)
+                if os.path.exists(image_path):
+                    with open(image_path, 'rb') as photo:
+                        await context.bot.send_photo(
+                            chat_id=query.message.chat_id,
+                            photo=photo,
+                            caption=text,
+                            reply_markup=reply_markup,
+                            parse_mode='HTML'
+                        )
+                else:
+                    await context.bot.send_message(
+                        chat_id=query.message.chat_id,
+                        text=text,
+                        reply_markup=reply_markup,
+                        parse_mode='HTML'
+                    )
+        else:
+            if os.path.exists(image_path):
+                with open(image_path, 'rb') as photo:
+                    await update.message.reply_photo(
+                        photo=photo,
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode='HTML'
+                    )
+            else:
+                await update.message.reply_text(
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+        return
+    
+    # 2. Если раздача ОТКРЫТА (13 августа 12:00 МСК и позже):
+    from utils import is_user_subscribed_to_channel
+    is_subscribed = await is_user_subscribed_to_channel(bot, user_id, "@botgangster")
+    
+    from scam import get_referral_stats
+    ref_stats = get_referral_stats(user_id)
+    ref_count = ref_stats['referrals_count']
+    
+    acc_id = ensure_tshirt_distribution_in_db()
+    already_owned = has_accessory(user_id, acc_id)
+    
+    sub_status = "✅ подписан" if is_subscribed else "❌ не подписан"
+    ref_status = f"{'✅' if ref_count >= 3 else '❌'} {ref_count}/3"
+    
+    try:
+        bot_info = await bot.get_me()
+        bot_username = bot_info.username
+    except Exception:
+        bot_username = "gangster77_bot"
+        
+    ref_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+    
+    text = (
+        "🎁 <b>раздача «крутая футболка»</b>\n\n"
+        "участвуй в раздаче и получи эксклюзивную футболку!\n\n"
+        "📋 <b>условия получения:</b>\n"
+        f"1. 📢 подписка на канал @botgangster: [<b>{sub_status}</b>]\n"
+        f"2. 👥 пригласить 3 друзей по реф. ссылке: [<b>{ref_status}</b>]\n\n"
+        f"🔗 <b>твоя реферальная ссылка:</b>\n<code>{ref_link}</code>"
+    )
+    if already_owned:
+        text += "\n\n✅ <b>ты уже забрал эту футболку!</b>"
+        
+    keyboard = []
+    if not is_subscribed:
+        keyboard.append([InlineKeyboardButton("📢 подписаться на канал", url="https://t.me/botgangster")])
+        
+    if already_owned:
+        keyboard.append([InlineKeyboardButton("✅ уже получено", callback_data="already_claimed_tshirt")])
+    else:
+        keyboard.append([InlineKeyboardButton("🎁 забрать футболку", callback_data="claim_tshirt_distribution")])
+        
+    keyboard.append([InlineKeyboardButton("🔄 проверить условия", callback_data="refresh_tshirt_distribution")])
+    keyboard.append([InlineKeyboardButton("⬅️ главное меню", callback_data="back_to_main_menu")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if update.callback_query:
+        query = update.callback_query
+        try:
+            with open(image_path, 'rb') as photo:
+                await query.edit_message_media(
+                    media=InputMediaPhoto(media=photo, caption=text, parse_mode='HTML'),
+                    reply_markup=reply_markup
+                )
+        except Exception:
+            await safe_delete_message(context, query.message.chat_id, query.message.message_id)
+            if os.path.exists(image_path):
+                with open(image_path, 'rb') as photo:
+                    await context.bot.send_photo(
+                        chat_id=query.message.chat_id,
+                        photo=photo,
+                        caption=text,
+                        reply_markup=reply_markup,
+                        parse_mode='HTML'
+                    )
+            else:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text=text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+    else:
+        if os.path.exists(image_path):
+            with open(image_path, 'rb') as photo:
+                await update.message.reply_photo(
+                    photo=photo,
+                    caption=text,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+        else:
+            await update.message.reply_text(
+                text,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+
+async def claim_tshirt_distribution(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает забор футболки с раздачи"""
+    query = update.callback_query
+    user_id = update.effective_user.id
+    bot = context.bot
+    
+    if not is_distribution_open():
+        countdown_str = get_time_until_distribution_start()
+        await query.answer(f"🔒 Раздача еще не началась! Старт 13 августа в 12:00 МСК (осталось {countdown_str}).", show_alert=True)
+        return
+        
+    acc_id = ensure_tshirt_distribution_in_db()
+    if has_accessory(user_id, acc_id):
+        await query.answer("ты уже забрал эту футболку!", show_alert=True)
+        return
+        
+    from utils import is_user_subscribed_to_channel
+    is_subscribed = await is_user_subscribed_to_channel(bot, user_id, "@botgangster")
+    
+    from scam import get_referral_stats
+    ref_stats = get_referral_stats(user_id)
+    ref_count = ref_stats['referrals_count']
+    
+    if not is_subscribed:
+        await query.answer("❌ ты еще не подписался на канал @botgangster!", show_alert=True)
+        return
+        
+    if ref_count < 3:
+        await query.answer(f"❌ ты пригласил {ref_count}/3 друзей. пригласи еще {3 - ref_count}!", show_alert=True)
+        return
+        
+    # Добавляем в user_items
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO user_items (user_id, accessory_id) VALUES (?, ?)', (user_id, acc_id))
+    conn.commit()
+    
+    # Проверяем, одета ли уже верхняя одежда (body)
+    cursor.execute('SELECT body_accessory FROM user_equipped WHERE user_id = ?', (user_id,))
+    row = cursor.fetchone()
+    equipped_body = row[0] if row else None
+    conn.close()
+    
+    if equipped_body is None:
+        # Слоты туловища пусты - надеваем автоматически
+        equip_accessory(user_id, acc_id)
+        alert_msg = "🎁 Поздравляем! Ты получил «крутую футболку»! Она автоматически надета на твоего персонажа!"
+    else:
+        # У юзера уже надета верхняя одежда - убираем футболку в шкаф
+        alert_msg = "🎁 Поздравляем! Ты получил «крутую футболку»! Так как на тебе уже одета другая одежда, футболка убрана в твой шкаф дома."
+        
+    clear_character_cache(user_id)
+    await query.answer(alert_msg, show_alert=True)
+    await show_tshirt_distribution_menu(update, context)
+
