@@ -2172,7 +2172,6 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         if len(parts) > 1:
             code_input = parts[1].strip()
             if code_input.lower() not in ["промокод", "промокоды", "промо"]:
-                from donations import activate_promocode
                 success, msg = activate_promocode(user_id, code_input)
                 await update.message.reply_text(msg, parse_mode='HTML')
                 return
@@ -2271,7 +2270,6 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         raw_text = update.message.text.strip()
         clean_code = raw_text.replace('-', '').replace('_', '')
         if len(raw_text) >= 3 and len(raw_text.split()) == 1 and clean_code.isalnum():
-            from donations import activate_promocode
             success, msg = activate_promocode(user_id, raw_text)
             await update.message.reply_text(msg, parse_mode='HTML')
             return
