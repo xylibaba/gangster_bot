@@ -2161,16 +2161,22 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         handled = True
         await show_donation_menu(update, context)
         return
-    elif text in ["🎁 промокод", "промокод"] or first_word in ["промокоды", "промокод", "промо"]:
+    elif text in ["🎁 промокод", "промокод", "промокоды", "🎁 промокод ✅"]:
         handled = True
-        parts = update.message.text.split(maxsplit=1)
+        await prompt_promocode(update, context)
+        return
+    elif first_word in ["промокод", "промо", "/promo", "/promocode"] or text.startswith("🎁 промокод "):
+        handled = True
+        raw_msg = update.message.text.strip()
+        parts = raw_msg.split(maxsplit=1)
         if len(parts) > 1:
             code_input = parts[1].strip()
-            from donations import activate_promocode
-            success, msg = activate_promocode(user_id, code_input)
-            await update.message.reply_text(msg, parse_mode='HTML')
-        else:
-            await prompt_promocode(update, context)
+            if code_input.lower() not in ["промокод", "промокоды", "промо"]:
+                from donations import activate_promocode
+                success, msg = activate_promocode(user_id, code_input)
+                await update.message.reply_text(msg, parse_mode='HTML')
+                return
+        await prompt_promocode(update, context)
         return
     elif text in ["раздача 🎁", "🎁 раздача", "раздача"]:
         handled = True
