@@ -1527,6 +1527,176 @@ async def onews_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='HTML'
     )
 
+# Команды управления промокодами (Главный Админ)
+async def addpromo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Создает новый промокод (только для Главного Админа)"""
+    user_id = update.effective_user.id
+    if is_user_banned(user_id):
+        return
+    if not is_main_admin(user_id):
+        await update.message.reply_text("❌ только главный админ может создавать промокоды!")
+        return
+        
+    args = getattr(context, 'args', None) or []
+    if not args:
+        from donations import render_promo_constructor_screen
+        text, reply_markup = render_promo_constructor_screen(context)
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        return
+
+    code_input = args[0]
+    rewards_str = args[1] if len(args) > 1 else ""
+    max_uses_str = args[2] if len(args) > 2 else "1"
+    target_user_str = args[3] if len(args) > 3 else "-"
+    hours_str = args[4] if len(args) > 4 else "-"
+    
+    from donations import parse_promo_rewards, resolve_accessory_id_by_name_or_id, resolve_background_id_by_name_or_id, resolve_skin_id_by_name_or_id, create_promocode_entry
+    parsed_rewards = parse_promo_rewards(rewards_str)
+    
+    reward_money = parsed_rewards['money']
+    reward_acc_id = resolve_accessory_id_by_name_or_id(parsed_rewards['acc_name']) if parsed_rewards['acc_name'] else None
+    reward_bg_id = resolve_background_id_by_name_or_id(parsed_rewards['bg_name']) if parsed_rewards['bg_name'] else None
+    reward_skin_id = resolve_skin_id_by_name_or_id(parsed_rewards['skin_name']) if parsed_rewards['skin_name'] else None
+    
+    try:
+        max_uses = int(max_uses_str) if max_uses_str != '-' else 1
+    except ValueError:
+        max_uses = 1
+        
+    target_user_id = None
+    if target_user_str != '-':
+        target_username = target_user_str.replace('@', '')
+        t_user = get_user_by_username(target_username)
+        if not t_user:
+            try:
+                t_user = get_user(int(target_username))
+            except ValueError:
+                pass
+        if t_user:
+            target_user_id = t_user[0]
+        else:
+            await update.message.reply_text(f"❌ Пользователь '{target_user_str}' не найден!")
+            return
+
+    try:
+        expires_in_hours = float(hours_str) if hours_str != '-' else None
+    except ValueError:
+        expires_in_hours = None
+
+    success, msg, created_code = create_promocode_entry(
+        code=code_input,
+        reward_money=reward_money,
+        reward_accessory_id=reward_acc_id,
+        reward_background_id=reward_bg_id,
+        reward_skin_id=reward_skin_id,
+        target_user_id=target_user_id,
+        max_uses=max_uses,
+        expires_in_hours=expires_in_hours,
+        created_by=user_id
+    )
+    
+    if success:
+        from utils import format_money
+        res_text = (
+            f"✅ <b>Промокод <code>{created_code}</code> успешно создан!</b>\n\n"
+            f"📋 <b>Содержимое:</b>\n"
+        )
+        if reward_money > 0:
+            res_text += f"• 💰 Деньги: {format_money(reward_money)}\n"
+        if reward_acc_id:
+            res_text += f"• 👕 Аксессуар ID: {reward_acc_id}\n"
+        if reward_bg_id:
+            res_text += f"• 🎨 Фон ID: {reward_bg_id}\n"
+        if reward_skin_id:
+            res_text += f"• 👤 Скин ID: {reward_skin_id}\n"
+        if parsed_rewards['is_plus']:
+            res_text += "• ⭐️ Подписка Гангстер Плюс\n"
+            
+        res_text += f"\n👥 Макс. активаций: {max_uses if max_uses > 0 else 'Безлимит'}\n"
+        if target_user_id:
+            res_text += f"🎯 Только для ID: {target_user_id}\n"
+        if expires_in_hours:
+            res_text += f"⏳ Срок действия: {expires_in_hours} ч.\n"
+            
+        await update.message.reply_text(res_text, parse_mode='HTML')
+    else:
+        await update.message.reply_text(msg, parse_mode='HTML')
+
+async def promos_list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список существующих промокодов (для Главного Админа)"""
+    user_id = update.effective_user.id
+    if is_user_banned(user_id):
+        return
+    if not is_main_admin(user_id):
+        await update.message.reply_text("❌ только главный админ может просматривать промокоды!")
+        return
+        
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        SELECT code, reward_money, reward_accessory_id, reward_background_id, reward_skin_id,
+               target_user_id, max_uses, uses_count, expires_at
+        FROM promocodes
+        ORDER BY rowid DESC
+        LIMIT 30
+    ''')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    if not rows:
+        await update.message.reply_text("🎟️ <b>Список промокодов пуст.</b>", parse_mode='HTML')
+        return
+        
+    text = "🎟️ <b>Список промокодов:</b>\n\n"
+    import time
+    from utils import format_money
+    now = time.time()
+    for row in rows:
+        code, money, acc_id, bg_id, skin_id, target_uid, max_u, uses, exp = row
+        status = "✅"
+        if exp and now > exp:
+            status = "⏳ истёк"
+        elif max_u > 0 and uses >= max_u:
+            status = "❌ исчерпан"
+            
+        rewards = []
+        if money: rewards.append(f"{format_money(money)}")
+        if acc_id: rewards.append(f"акс#{acc_id}")
+        if bg_id: rewards.append(f"фон#{bg_id}")
+        if skin_id: rewards.append(f"скин#{skin_id}")
+        rewards_str = ", ".join(rewards) if rewards else "бонус"
+        
+        text += f"{status} <code>{code}</code> — [{rewards_str}] ({uses}/{max_u if max_u > 0 else '∞'})\n"
+        
+    await update.message.reply_text(text, parse_mode='HTML')
+
+async def delpromo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаляет промокод (для Главного Админа)"""
+    user_id = update.effective_user.id
+    if is_user_banned(user_id):
+        return
+    if not is_main_admin(user_id):
+        await update.message.reply_text("❌ только главный админ может удалять промокоды!")
+        return
+        
+    args = getattr(context, 'args', None) or []
+    if not args:
+        await update.message.reply_text("❌ Использование: <code>/delpromo <code></code>", parse_mode='HTML')
+        return
+        
+    code_del = args[0].strip().upper()
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM promocodes WHERE UPPER(code) = ?", (code_del,))
+    deleted = cursor.rowcount > 0
+    conn.commit()
+    conn.close()
+    
+    if deleted:
+        await update.message.reply_text(f"✅ Промокод <code>{code_del}</code> удалён!", parse_mode='HTML')
+    else:
+        await update.message.reply_text(f"❌ Промокод <code>{code_del}</code> не найден!", parse_mode='HTML')
+
 # обработчик неизвестных команд
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1784,6 +1954,72 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         await update.message.reply_text(msg, parse_mode='HTML')
         return
 
+    if context.user_data.get('waiting_for_promo_money'):
+        del context.user_data['waiting_for_promo_money']
+        val = parse_amount(update.message.text.strip())
+        from donations import get_promo_builder_data, render_promo_constructor_screen
+        bld = get_promo_builder_data(context)
+        bld['money'] = val
+        text, reply_markup = render_promo_constructor_screen(context)
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        return
+
+    if context.user_data.get('waiting_for_promo_code'):
+        del context.user_data['waiting_for_promo_code']
+        code_str = update.message.text.strip().upper()
+        from donations import get_promo_builder_data, render_promo_constructor_screen
+        bld = get_promo_builder_data(context)
+        bld['code'] = code_str
+        text, reply_markup = render_promo_constructor_screen(context)
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        return
+
+    if context.user_data.get('waiting_for_promo_uses'):
+        del context.user_data['waiting_for_promo_uses']
+        try:
+            val = int(update.message.text.strip())
+        except ValueError:
+            val = 1
+        from donations import get_promo_builder_data, render_promo_constructor_screen
+        bld = get_promo_builder_data(context)
+        bld['max_uses'] = val
+        text, reply_markup = render_promo_constructor_screen(context)
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        return
+
+    if context.user_data.get('waiting_for_promo_exp'):
+        del context.user_data['waiting_for_promo_exp']
+        try:
+            val = float(update.message.text.strip())
+        except ValueError:
+            val = None
+        from donations import get_promo_builder_data, render_promo_constructor_screen
+        bld = get_promo_builder_data(context)
+        bld['expires_hours'] = val if (val and val > 0) else None
+        text, reply_markup = render_promo_constructor_screen(context)
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        return
+
+    if context.user_data.get('waiting_for_promo_target'):
+        del context.user_data['waiting_for_promo_target']
+        input_str = update.message.text.strip().replace('@', '')
+        t_user = get_user_by_username(input_str)
+        if not t_user:
+            try:
+                t_user = get_user(int(input_str))
+            except ValueError:
+                pass
+        from donations import get_promo_builder_data, render_promo_constructor_screen
+        bld = get_promo_builder_data(context)
+        if t_user:
+            bld['target_user_id'] = t_user[0]
+            await update.message.reply_text(f"✅ Установлен получатель: {t_user[2]} (ID: {t_user[0]})")
+        else:
+            await update.message.reply_text(f"❌ Пользователь '{input_str}' не найден!")
+        text, reply_markup = render_promo_constructor_screen(context)
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        return
+
     if context.user_data.get('waiting_for_roommate_invite'):
         await homes.finish_invite_roommate(update, context, update.message.text.strip())
         return
@@ -1925,9 +2161,16 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         handled = True
         await show_donation_menu(update, context)
         return
-    elif text in ["🎁 промокод", "промокод"]:
+    elif text in ["🎁 промокод", "промокод"] or first_word in ["промокоды", "промокод", "промо"]:
         handled = True
-        await prompt_promocode(update, context)
+        parts = update.message.text.split(maxsplit=1)
+        if len(parts) > 1:
+            code_input = parts[1].strip()
+            from donations import activate_promocode
+            success, msg = activate_promocode(user_id, code_input)
+            await update.message.reply_text(msg, parse_mode='HTML')
+        else:
+            await prompt_promocode(update, context)
         return
     elif text in ["раздача 🎁", "🎁 раздача", "раздача"]:
         handled = True
@@ -2067,6 +2310,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         data = query.data
+        
+        if data.startswith("pb_"):
+            from donations import handle_promo_builder_callback
+            await handle_promo_builder_callback(update, context)
+            return
         
         # обработка команд помощи
         if data == "help_admin_commands":
@@ -2990,6 +3238,9 @@ def main():
     application.add_handler(CommandHandler("news", news_command, filters=filters.ALL))
     application.add_handler(CommandHandler("onews", onews_command, filters=filters.ALL))
     application.add_handler(CommandHandler("top", show_top_balance))
+    application.add_handler(CommandHandler(["addpromo", "createpromo"], addpromo_command))
+    application.add_handler(CommandHandler(["promos", "promolist"], promos_list_command))
+    application.add_handler(CommandHandler("delpromo", delpromo_command))
     
     # обработчики платежей
     application.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))

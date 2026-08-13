@@ -808,17 +808,110 @@ async def check_all_pending_crypto_payments(context: ContextTypes.DEFAULT_TYPE):
 # СИСТЕМА ПРОМОКОДОВ
 # ==========================================
 
+def generate_random_promo_code(length: int = 10) -> str:
+    """Генерирует случайную комбинацию заглавных букв и цифр"""
+    import random
+    import string
+    chars = string.ascii_uppercase + string.digits
+    return ''.join(random.choices(chars, k=length))
+
+def parse_promo_rewards(rewards_str: str):
+    """
+    Парсит строку наград для промокода.
+    Форматы: 100k, acc:джинсы тянки, bg:Лос-Сантос, skin:молодой, plus
+    Возвращает словарь со всеми распарсенными наградами.
+    """
+    res = {
+        'money': 0,
+        'acc_name': None,
+        'bg_name': None,
+        'skin_name': None,
+        'is_plus': False
+    }
+    if not rewards_str:
+        return res
+    
+    parts = rewards_str.replace(',', '+').split('+') if '+' in rewards_str else rewards_str.split()
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        lower_part = part.lower()
+        if lower_part in ['plus', 'гангстер_плюс', 'gangster_plus']:
+            res['is_plus'] = True
+        elif lower_part.startswith(('acc:', 'акс:', 'шмотка:')):
+            res['acc_name'] = part.split(':', 1)[1].strip()
+        elif lower_part.startswith(('bg:', 'фон:')):
+            res['bg_name'] = part.split(':', 1)[1].strip()
+        elif lower_part.startswith(('skin:', 'скин:')):
+            res['skin_name'] = part.split(':', 1)[1].strip()
+        else:
+            money_val = parse_amount(part)
+            if money_val > 0:
+                res['money'] += money_val
+    return res
+
+def resolve_accessory_id_by_name_or_id(val):
+    if not val:
+        return None
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT accessory_id FROM accessories WHERE LOWER(name) = LOWER(?) LIMIT 1", (val,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def resolve_background_id_by_name_or_id(val):
+    if not val:
+        return None
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT background_id FROM backgrounds WHERE LOWER(name) = LOWER(?) LIMIT 1", (val,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+def resolve_skin_id_by_name_or_id(val):
+    if not val:
+        return None
+    try:
+        return int(val)
+    except ValueError:
+        pass
+    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute("SELECT skin_id FROM skins WHERE LOWER(name) = LOWER(?) LIMIT 1", (val,))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 def init_promocodes_db():
-    """Инициализация таблиц БД для промокодов"""
+    """Инициализация таблиц БД для промокодов и авто-миграция"""
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS promocodes (
             code TEXT PRIMARY KEY,
-            reward_type TEXT NOT NULL,
-            reward_value INTEGER NOT NULL,
-            max_uses INTEGER DEFAULT 0,
-            uses_count INTEGER DEFAULT 0
+            reward_money INTEGER DEFAULT 0,
+            reward_accessory_id INTEGER DEFAULT NULL,
+            reward_background_id INTEGER DEFAULT NULL,
+            reward_skin_id INTEGER DEFAULT NULL,
+            reward_type TEXT DEFAULT NULL,
+            reward_value INTEGER DEFAULT 0,
+            target_user_id INTEGER DEFAULT NULL,
+            max_uses INTEGER DEFAULT 1,
+            uses_count INTEGER DEFAULT 0,
+            expires_at REAL DEFAULT NULL,
+            created_by INTEGER DEFAULT NULL,
+            created_at REAL DEFAULT NULL
         )
     ''')
     cursor.execute('''
@@ -829,22 +922,102 @@ def init_promocodes_db():
             PRIMARY KEY (user_id, code)
         )
     ''')
+    
+    # Миграция колонок таблицы promocodes
+    cursor.execute("PRAGMA table_info(promocodes)")
+    cols = [c[1] for c in cursor.fetchall()]
+    new_cols = {
+        'reward_money': 'INTEGER DEFAULT 0',
+        'reward_accessory_id': 'INTEGER DEFAULT NULL',
+        'reward_background_id': 'INTEGER DEFAULT NULL',
+        'reward_skin_id': 'INTEGER DEFAULT NULL',
+        'target_user_id': 'INTEGER DEFAULT NULL',
+        'expires_at': 'REAL DEFAULT NULL',
+        'created_by': 'INTEGER DEFAULT NULL',
+        'created_at': 'REAL DEFAULT NULL'
+    }
+    for col_name, col_type in new_cols.items():
+        if col_name not in cols:
+            try:
+                cursor.execute(f"ALTER TABLE promocodes ADD COLUMN {col_name} {col_type}")
+            except Exception:
+                pass
+
     # Заполняем стартовыми промокодами при пустой БД
     cursor.execute("SELECT COUNT(*) FROM promocodes")
     if cursor.fetchone()[0] == 0:
-        cursor.execute("INSERT INTO promocodes (code, reward_type, reward_value) VALUES ('GANGSTER', 'money', 50000)")
-        cursor.execute("INSERT INTO promocodes (code, reward_type, reward_value) VALUES ('START', 'money', 25000)")
-        cursor.execute("INSERT INTO promocodes (code, reward_type, reward_value) VALUES ('BONUS', 'money', 100000)")
+        cursor.execute("INSERT INTO promocodes (code, reward_type, reward_value, reward_money) VALUES ('GANGSTER', 'money', 50000, 50000)")
+        cursor.execute("INSERT INTO promocodes (code, reward_type, reward_value, reward_money) VALUES ('START', 'money', 25000, 25000)")
+        cursor.execute("INSERT INTO promocodes (code, reward_type, reward_value, reward_money) VALUES ('BONUS', 'money', 100000, 100000)")
     
-    # Всегда гарантируем наличие 3 эксклюзивных одноразовых промокодов на пистолет
+    # Всегда гарантируем наличие эксклюзивных одноразовых промокодов
     tester_codes = ['TESTER-GUN-777', 'BETA-PISTOLET-2026', 'GANGSTER-EXCLUSIVE-999']
     for code in tester_codes:
         cursor.execute("INSERT OR IGNORE INTO promocodes (code, reward_type, reward_value, max_uses, uses_count) VALUES (?, 'gun_accessory', 1, 1, 0)", (code,))
     conn.commit()
     conn.close()
 
+def create_promocode_entry(
+    code: str = None,
+    reward_money: int = 0,
+    reward_accessory_id: int = None,
+    reward_background_id: int = None,
+    reward_skin_id: int = None,
+    target_user_id: int = None,
+    max_uses: int = 1,
+    expires_in_hours: float = None,
+    created_by: int = None
+) -> tuple[bool, str, str]:
+    """
+    Создает промокод в базе данных.
+    Возвращает (success, message, created_code)
+    """
+    init_promocodes_db()
+    
+    conn = sqlite3.connect(DB_PATH, timeout=30.0, check_same_thread=False)
+    cursor = conn.cursor()
+    
+    try:
+        if not code or code.strip().lower() in ['auto', '-']:
+            # Генерируем случайную комбинацию заглавных букв и цифр
+            for _ in range(50):
+                new_code = generate_random_promo_code(10)
+                cursor.execute("SELECT 1 FROM promocodes WHERE UPPER(code) = ?", (new_code,))
+                if not cursor.fetchone():
+                    code = new_code
+                    break
+            if not code or code.strip().lower() in ['auto', '-']:
+                conn.close()
+                return False, "❌ не удалось сгенерировать уникальный промокод!", None
+        else:
+            code = code.strip().upper()
+            cursor.execute("SELECT 1 FROM promocodes WHERE UPPER(code) = ?", (code,))
+            if cursor.fetchone():
+                conn.close()
+                return False, f"❌ промокод <code>{code}</code> уже существует!", None
+        
+        created_at = time.time()
+        expires_at = (created_at + expires_in_hours * 3600) if (expires_in_hours and expires_in_hours > 0) else None
+        
+        cursor.execute('''
+            INSERT INTO promocodes (
+                code, reward_money, reward_accessory_id, reward_background_id, reward_skin_id,
+                reward_type, reward_value, target_user_id, max_uses, uses_count, expires_at, created_by, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+        ''', (
+            code, reward_money, reward_accessory_id, reward_background_id, reward_skin_id,
+            'custom', reward_money, target_user_id, max_uses, expires_at, created_by, created_at
+        ))
+        
+        conn.commit()
+        conn.close()
+        return True, "✅ промокод успешно создан!", code
+    except Exception as e:
+        logger.error(f"Ошибка создания промокода: {e}")
+        return False, f"❌ ошибка создания промокода: {e}", None
+
 def activate_promocode(user_id: int, code_str: str) -> tuple[bool, str]:
-    """Активирует промокод для пользователя"""
+    """Активирует промокод для пользователя с расширенной системой наград"""
     init_promocodes_db()
     code_str = code_str.strip().upper()
     
@@ -855,53 +1028,573 @@ def activate_promocode(user_id: int, code_str: str) -> tuple[bool, str]:
     cursor = conn.cursor()
     
     try:
-        cursor.execute("SELECT reward_type, reward_value, max_uses, uses_count FROM promocodes WHERE UPPER(code) = ?", (code_str,))
+        cursor.execute('''
+            SELECT code, reward_money, reward_accessory_id, reward_background_id, reward_skin_id,
+                   reward_type, reward_value, target_user_id, max_uses, uses_count, expires_at
+            FROM promocodes 
+            WHERE UPPER(code) = ?
+        ''', (code_str,))
         promo = cursor.fetchone()
         
         if not promo:
             conn.close()
             return False, "❌ такой промокод не найден или истек!"
             
-        reward_type, reward_value, max_uses, uses_count = promo
+        (code, reward_money, reward_acc_id, reward_bg_id, reward_skin_id,
+         reward_type, reward_value, target_user_id, max_uses, uses_count, expires_at) = promo
         
-        if max_uses > 0 and uses_count >= max_uses:
+        current_time = time.time()
+        
+        # Проверка срока действия
+        if expires_at and current_time > expires_at:
+            conn.close()
+            return False, "❌ срок действия этого промокода истёк!"
+        
+        # Проверка назначения конкретному пользователю
+        if target_user_id and target_user_id != user_id:
+            conn.close()
+            return False, "❌ этот промокод предназначен для другого пользователя!"
+            
+        # Проверка лимита использования
+        if max_uses and max_uses > 0 and uses_count >= max_uses:
             conn.close()
             return False, "❌ этот промокод больше недействителен (закончились активации)!"
             
+        # Проверка повторной активации юзером
         cursor.execute("SELECT 1 FROM user_promocodes WHERE user_id = ? AND UPPER(code) = ?", (user_id, code_str))
         if cursor.fetchone():
             conn.close()
             return False, "❌ вы уже активировали этот промокод!"
             
-        current_time = time.time()
         cursor.execute("INSERT INTO user_promocodes (user_id, code, activated_at) VALUES (?, ?, ?)", (user_id, code_str, current_time))
         cursor.execute("UPDATE promocodes SET uses_count = uses_count + 1 WHERE UPPER(code) = ?", (code_str,))
         conn.commit()
         conn.close()
         
-        if reward_type == 'money':
-            update_user_money(user_id, reward_value)
-            msg = f"✅ промокод <b>{code_str}</b> успешно активирован!\n\n💰 начислено: <b>{format_money(reward_value)}</b>"
-        elif reward_type == 'coins':
+        # Выдаем все привязанные награды
+        rewards_list = []
+        
+        # 1. Деньги
+        money_to_give = reward_money if (reward_money and reward_money > 0) else (reward_value if reward_type in ['money', None] and reward_value > 0 else 0)
+        if money_to_give > 0:
+            update_user_money(user_id, money_to_give)
+            rewards_list.append(f"💰 <b>деньги:</b> +{format_money(money_to_give)}")
+            
+        # 2. Аксессуар
+        if reward_acc_id:
+            conn_temp = sqlite3.connect(DB_PATH)
+            c_temp = conn_temp.cursor()
+            c_temp.execute("SELECT name FROM accessories WHERE accessory_id = ?", (reward_acc_id,))
+            acc_row = c_temp.fetchone()
+            acc_name = acc_row[0] if acc_row else f"аксессуар #{reward_acc_id}"
+            c_temp.execute("INSERT OR IGNORE INTO user_items (user_id, accessory_id) VALUES (?, ?)", (user_id, reward_acc_id))
+            conn_temp.commit()
+            conn_temp.close()
+            rewards_list.append(f"👕 <b>аксессуар:</b> {acc_name}")
+            
+        # 3. Фон
+        if reward_bg_id:
+            conn_temp = sqlite3.connect(DB_PATH)
+            c_temp = conn_temp.cursor()
+            c_temp.execute("SELECT name FROM backgrounds WHERE background_id = ?", (reward_bg_id,))
+            bg_row = c_temp.fetchone()
+            bg_name = bg_row[0] if bg_row else f"фон #{reward_bg_id}"
+            c_temp.execute("INSERT OR IGNORE INTO user_items (user_id, accessory_id) VALUES (?, ?)", (user_id, reward_bg_id))
+            conn_temp.commit()
+            conn_temp.close()
+            rewards_list.append(f"🎨 <b>фон:</b> {bg_name}")
+            
+        # 4. Скин
+        if reward_skin_id:
+            conn_temp = sqlite3.connect(DB_PATH)
+            c_temp = conn_temp.cursor()
+            c_temp.execute("SELECT name FROM skins WHERE skin_id = ?", (reward_skin_id,))
+            skin_row = c_temp.fetchone()
+            skin_name = skin_row[0] if skin_row else f"скин #{reward_skin_id}"
+            c_temp.execute("INSERT OR IGNORE INTO user_skin (user_id, skin_id) VALUES (?, ?)", (user_id, reward_skin_id))
+            conn_temp.commit()
+            conn_temp.close()
+            rewards_list.append(f"👤 <b>скин:</b> {skin_name}")
+            
+        # 5. Поддержка legacy reward_type:
+        if reward_type == 'coins':
             from registration import update_admin_currency
             update_admin_currency(user_id, reward_value)
-            msg = f"✅ промокод <b>{code_str}</b> успешно активирован!\n\n💎 начислено: <b>{reward_value} админ-коинов</b>"
+            rewards_list.append(f"💎 <b>админ-коины:</b> +{reward_value}")
         elif reward_type == 'gangster_plus':
             from registration import update_user_field
             update_user_field(user_id, 'is_gangster_plus', True)
-            msg = f"✅ промокод <b>{code_str}</b> успешно активирован!\n\n⭐️ вам активирована подписка <b>Гангстер Плюс</b>!"
+            rewards_list.append("⭐️ <b>подписка:</b> Гангстер Плюс")
         elif reward_type == 'gun_accessory':
             from accessories import give_user_gun_accessory
             give_user_gun_accessory(user_id)
-            msg = f"✅ эксклюзивный промокод <b>{code_str}</b> активирован!\n\n🔫 вам выдан и надет эксклюзивный аксессуар: <b>пистолет</b>!\nуправлять им можно в меню ⚙️ Настройки."
-        else:
-            update_user_money(user_id, reward_value)
-            msg = f"✅ промокод <b>{code_str}</b> успешно активирован!"
+            rewards_list.append("🔫 <b>аксессуар:</b> пистолет")
+
+        if not rewards_list:
+            rewards_list.append("🎁 Бонус получен!")
             
+        msg = f"🎉 <b>промокод <code>{code_str}</code> успешно активирован!</b>\n\n<b>вы получили:</b>\n" + "\n".join(rewards_list)
         return True, msg
     except Exception as e:
         logger.error(f"Ошибка активации промокода: {e}")
         return False, f"❌ ошибка активации промокода: {e}"
+
+# ==========================================
+# ИНТЕРАКТИВНЫЙ КОНСТРУКТОР ПРОМОКОДОВ (КНОПКИ)
+# ==========================================
+
+def get_promo_builder_data(context):
+    if 'promo_builder' not in context.user_data or not isinstance(context.user_data['promo_builder'], dict):
+        context.user_data['promo_builder'] = {
+            'code': 'auto',
+            'money': 0,
+            'acc_id': None,
+            'bg_id': None,
+            'skin_id': None,
+            'is_plus': False,
+            'max_uses': 1,
+            'target_user_id': None,
+            'expires_hours': None
+        }
+    return context.user_data['promo_builder']
+
+def render_promo_constructor_screen(context):
+    data = get_promo_builder_data(context)
+    
+    code_display = "🎲 [Случайный из букв и цифр]" if data['code'] == 'auto' else f"<code>{data['code']}</code>"
+    money_display = format_money(data['money']) if data['money'] > 0 else "❌ Не задано"
+    
+    acc_display = "❌ Не выбран"
+    if data['acc_id']:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT name FROM accessories WHERE accessory_id = ?", (data['acc_id'],))
+        row = c.fetchone()
+        conn.close()
+        acc_display = f"👕 {row[0]}" if row else f"#{data['acc_id']}"
+        
+    bg_display = "❌ Не выбран"
+    if data['bg_id']:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT name FROM backgrounds WHERE background_id = ?", (data['bg_id'],))
+        row = c.fetchone()
+        conn.close()
+        bg_display = f"🎨 {row[0]}" if row else f"#{data['bg_id']}"
+        
+    skin_display = "❌ Не выбран"
+    if data['skin_id']:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT name FROM skins WHERE skin_id = ?", (data['skin_id'],))
+        row = c.fetchone()
+        conn.close()
+        skin_display = f"👤 {row[0]}" if row else f"#{data['skin_id']}"
+        
+    plus_display = "✅ [Включено]" if data['is_plus'] else "❌ [Выключено]"
+    uses_display = f"{data['max_uses']}" if data['max_uses'] > 0 else "∞ [Безлимит]"
+    target_display = f"ID: {data['target_user_id']}" if data['target_user_id'] else "👥 Для всех"
+    exp_display = f"{data['expires_hours']} ч." if data['expires_hours'] else "⏳ Бессрочно"
+    
+    text = (
+        "👑 <b>Конструктор промокодов (Главный Админ)</b>\n\n"
+        "Выбирайте любые параметры и награды промокода по кнопкам ниже:\n\n"
+        f"• 🎟️ <b>Код:</b> {code_display}\n"
+        f"• 💰 <b>Деньги:</b> {money_display}\n"
+        f"• 👕 <b>Аксессуар:</b> {acc_display}\n"
+        f"• 🎨 <b>Фон:</b> {bg_display}\n"
+        f"• 👤 <b>Скин:</b> {skin_display}\n"
+        f"• ⭐️ <b>Гангстер Плюс:</b> {plus_display}\n"
+        f"• 👥 <b>Активаций:</b> {uses_display}\n"
+        f"• 🎯 <b>Получатель:</b> {target_display}\n"
+        f"• ⏳ <b>Срок действия:</b> {exp_display}\n"
+    )
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("💰 Деньги", callback_data="pb_set_money"),
+            InlineKeyboardButton("🎟️ Задать код", callback_data="pb_set_code")
+        ],
+        [
+            InlineKeyboardButton("👕 Выбрать аксессуар", callback_data="pb_sel_acc"),
+            InlineKeyboardButton("🎨 Выбрать фон", callback_data="pb_sel_bg")
+        ],
+        [
+            InlineKeyboardButton("👤 Выбрать скин", callback_data="pb_sel_skin"),
+            InlineKeyboardButton(f"⭐️ Гангстер Плюс: {'✅' if data['is_plus'] else '❌'}", callback_data="pb_toggle_plus")
+        ],
+        [
+            InlineKeyboardButton(f"👥 Активации ({uses_display})", callback_data="pb_sel_uses"),
+            InlineKeyboardButton(f"⏳ Срок ({exp_display})", callback_data="pb_sel_exp")
+        ],
+        [
+            InlineKeyboardButton(f"🎯 Получатель ({target_display})", callback_data="pb_sel_target")
+        ],
+        [
+            InlineKeyboardButton("✨ 🎁 СОЗДАТЬ ПРОМОКОД ✨", callback_data="pb_create")
+        ],
+        [
+            InlineKeyboardButton("🔄 Сбросить", callback_data="pb_reset"),
+            InlineKeyboardButton("❌ Закрыть", callback_data="pb_cancel")
+        ]
+    ]
+    
+    return text, InlineKeyboardMarkup(keyboard)
+
+def render_promo_acc_selector():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT accessory_id, name, type FROM accessories WHERE is_available = TRUE ORDER BY type, price")
+    rows = c.fetchall()
+    conn.close()
+    
+    text = "👕 <b>Выберите аксессуар для добавления в промокод по кнопке:</b>"
+    keyboard = []
+    
+    type_emoji = {'head': '👒', 'hand': '🖐️', 'body': '📿', 'pants': '👖', 'feet': '👟'}
+    
+    row_btns = []
+    for acc_id, name, acc_type in rows:
+        emoji = type_emoji.get(acc_type, '👕')
+        row_btns.append(InlineKeyboardButton(f"{emoji} {name}", callback_data=f"pb_acc_{acc_id}"))
+        if len(row_btns) == 2:
+            keyboard.append(row_btns)
+            row_btns = []
+    if row_btns:
+        keyboard.append(row_btns)
+        
+    keyboard.append([InlineKeyboardButton("🚫 Снять выбор аксессуара", callback_data="pb_acc_none")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад в конструктор", callback_data="pb_main")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+def render_promo_bg_selector():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT background_id, name FROM backgrounds WHERE is_available = TRUE ORDER BY price")
+    rows = c.fetchall()
+    conn.close()
+    
+    text = "🎨 <b>Выберите фон для добавления в промокод по кнопке:</b>"
+    keyboard = []
+    
+    row_btns = []
+    for bg_id, name in rows:
+        row_btns.append(InlineKeyboardButton(f"🎨 {name}", callback_data=f"pb_bg_{bg_id}"))
+        if len(row_btns) == 2:
+            keyboard.append(row_btns)
+            row_btns = []
+    if row_btns:
+        keyboard.append(row_btns)
+        
+    keyboard.append([InlineKeyboardButton("🚫 Снять выбор фона", callback_data="pb_bg_none")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад в конструктор", callback_data="pb_main")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+def render_promo_skin_selector():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT skin_id, name FROM skins ORDER BY price")
+    rows = c.fetchall()
+    conn.close()
+    
+    text = "👤 <b>Выберите скин для добавления в промокод по кнопке:</b>"
+    keyboard = []
+    
+    row_btns = []
+    for skin_id, name in rows:
+        row_btns.append(InlineKeyboardButton(f"👤 {name}", callback_data=f"pb_skin_{skin_id}"))
+        if len(row_btns) == 2:
+            keyboard.append(row_btns)
+            row_btns = []
+    if row_btns:
+        keyboard.append(row_btns)
+        
+    keyboard.append([InlineKeyboardButton("🚫 Снять выбор скина", callback_data="pb_skin_none")])
+    keyboard.append([InlineKeyboardButton("⬅️ Назад в конструктор", callback_data="pb_main")])
+    return text, InlineKeyboardMarkup(keyboard)
+
+def render_promo_money_selector():
+    text = "💰 <b>Выберите или укажите сумму денег для промокода:</b>"
+    keyboard = [
+        [
+            InlineKeyboardButton("0$", callback_data="pb_money_val_0"),
+            InlineKeyboardButton("50.000$", callback_data="pb_money_val_50000"),
+            InlineKeyboardButton("100.000$", callback_data="pb_money_val_100000")
+        ],
+        [
+            InlineKeyboardButton("500.000$", callback_data="pb_money_val_500000"),
+            InlineKeyboardButton("1.000.000$", callback_data="pb_money_val_1000000"),
+            InlineKeyboardButton("5.000.000$", callback_data="pb_money_val_5000000")
+        ],
+        [
+            InlineKeyboardButton("✏️ Ввести сумму вручную", callback_data="pb_money_custom")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Назад в конструктор", callback_data="pb_main")
+        ]
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+def render_promo_uses_selector():
+    text = "👥 <b>Выберите лимит активаций промокода:</b>"
+    keyboard = [
+        [
+            InlineKeyboardButton("1 активация", callback_data="pb_uses_val_1"),
+            InlineKeyboardButton("3 активации", callback_data="pb_uses_val_3"),
+            InlineKeyboardButton("5 активаций", callback_data="pb_uses_val_5")
+        ],
+        [
+            InlineKeyboardButton("10 активаций", callback_data="pb_uses_val_10"),
+            InlineKeyboardButton("50 активаций", callback_data="pb_uses_val_50"),
+            InlineKeyboardButton("100 активаций", callback_data="pb_uses_val_100")
+        ],
+        [
+            InlineKeyboardButton("∞ Безлимитный", callback_data="pb_uses_val_0"),
+            InlineKeyboardButton("✏️ Ввести число вручную", callback_data="pb_uses_custom")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Назад в конструктор", callback_data="pb_main")
+        ]
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+def render_promo_exp_selector():
+    text = "⏳ <b>Выберите срок действия промокода (время сгорания):</b>"
+    keyboard = [
+        [
+            InlineKeyboardButton("∞ Бессрочно", callback_data="pb_exp_val_0"),
+            InlineKeyboardButton("1 час", callback_data="pb_exp_val_1"),
+            InlineKeyboardButton("6 часов", callback_data="pb_exp_val_6")
+        ],
+        [
+            InlineKeyboardButton("12 часов", callback_data="pb_exp_val_12"),
+            InlineKeyboardButton("24 часа (1 день)", callback_data="pb_exp_val_24"),
+            InlineKeyboardButton("48 часов (2 дня)", callback_data="pb_exp_val_48")
+        ],
+        [
+            InlineKeyboardButton("7 дней", callback_data="pb_exp_val_168"),
+            InlineKeyboardButton("✏️ Ввести количество часов", callback_data="pb_exp_custom")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Назад в конструктор", callback_data="pb_main")
+        ]
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+def render_promo_target_selector():
+    text = "🎯 <b>Выберите для кого предназначен промокод:</b>"
+    keyboard = [
+        [
+            InlineKeyboardButton("👥 Для всех пользователей", callback_data="pb_target_all")
+        ],
+        [
+            InlineKeyboardButton("🎯 Указать ID или @username пользователя", callback_data="pb_target_custom")
+        ],
+        [
+            InlineKeyboardButton("⬅️ Назад в конструктор", callback_data="pb_main")
+        ]
+    ]
+    return text, InlineKeyboardMarkup(keyboard)
+
+async def handle_promo_builder_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    
+    from registration import is_main_admin
+    if not is_main_admin(user_id):
+        await query.answer("❌ только главный админ!", show_alert=True)
+        return
+
+    bld = get_promo_builder_data(context)
+
+    if data == "pb_main":
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        
+    elif data == "pb_set_money":
+        text, reply_markup = render_promo_money_selector()
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        
+    elif data.startswith("pb_money_val_"):
+        val = int(data.replace("pb_money_val_", ""))
+        bld['money'] = val
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        
+    elif data == "pb_money_custom":
+        context.user_data['waiting_for_promo_money'] = True
+        await query.message.reply_text("💰 <b>Введите сумму денег для промокода в чат:</b>\n<i>(Например: 250k, 1.5kk или 500000)</i>", parse_mode='HTML')
+        await query.answer()
+
+    elif data == "pb_set_code":
+        context.user_data['waiting_for_promo_code'] = True
+        keyboard = [[InlineKeyboardButton("🎲 Сбросить на случайный (буквы + цифры)", callback_data="pb_code_auto")]]
+        await query.message.reply_text("🎟️ <b>Введите собственный код промокода в чат:</b>\n<i>(Или нажмите кнопку ниже для случайного)</i>", parse_mode='HTML', reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.answer()
+
+    elif data == "pb_code_auto":
+        bld['code'] = 'auto'
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_sel_acc":
+        text, reply_markup = render_promo_acc_selector()
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_acc_none":
+        bld['acc_id'] = None
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data.startswith("pb_acc_"):
+        aid = int(data.replace("pb_acc_", ""))
+        bld['acc_id'] = aid
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_sel_bg":
+        text, reply_markup = render_promo_bg_selector()
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_bg_none":
+        bld['bg_id'] = None
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data.startswith("pb_bg_"):
+        bid = int(data.replace("pb_bg_", ""))
+        bld['bg_id'] = bid
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_sel_skin":
+        text, reply_markup = render_promo_skin_selector()
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_skin_none":
+        bld['skin_id'] = None
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data.startswith("pb_skin_"):
+        sid = int(data.replace("pb_skin_", ""))
+        bld['skin_id'] = sid
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_toggle_plus":
+        bld['is_plus'] = not bld['is_plus']
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_sel_uses":
+        text, reply_markup = render_promo_uses_selector()
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data.startswith("pb_uses_val_"):
+        uval = int(data.replace("pb_uses_val_", ""))
+        bld['max_uses'] = uval
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_uses_custom":
+        context.user_data['waiting_for_promo_uses'] = True
+        await query.message.reply_text("👥 <b>Введите лимит активаций (целое число):</b>", parse_mode='HTML')
+        await query.answer()
+
+    elif data == "pb_sel_exp":
+        text, reply_markup = render_promo_exp_selector()
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data.startswith("pb_exp_val_"):
+        eval_h = float(data.replace("pb_exp_val_", ""))
+        bld['expires_hours'] = eval_h if eval_h > 0 else None
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_exp_custom":
+        context.user_data['waiting_for_promo_exp'] = True
+        await query.message.reply_text("⏳ <b>Введите срок действия в часах (например: 24):</b>", parse_mode='HTML')
+        await query.answer()
+
+    elif data == "pb_sel_target":
+        text, reply_markup = render_promo_target_selector()
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_target_all":
+        bld['target_user_id'] = None
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_target_custom":
+        context.user_data['waiting_for_promo_target'] = True
+        await query.message.reply_text("🎯 <b>Введите ID или @username целевого пользователя:</b>", parse_mode='HTML')
+        await query.answer()
+
+    elif data == "pb_reset":
+        context.user_data['promo_builder'] = {
+            'code': 'auto', 'money': 0, 'acc_id': None, 'bg_id': None,
+            'skin_id': None, 'is_plus': False, 'max_uses': 1,
+            'target_user_id': None, 'expires_hours': None
+        }
+        text, reply_markup = render_promo_constructor_screen(context)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    elif data == "pb_cancel":
+        try:
+            await query.message.delete()
+        except Exception:
+            pass
+
+    elif data == "pb_create":
+        success, msg, created_code = create_promocode_entry(
+            code=bld['code'],
+            reward_money=bld['money'],
+            reward_accessory_id=bld['acc_id'],
+            reward_background_id=bld['bg_id'],
+            reward_skin_id=bld['skin_id'],
+            target_user_id=bld['target_user_id'],
+            max_uses=bld['max_uses'],
+            expires_in_hours=bld['expires_hours'],
+            created_by=user_id
+        )
+        
+        if success:
+            res_text = (
+                f"🎉 <b>Промокод <code>{created_code}</code> успешно создан!</b>\n\n"
+                f"📋 <b>Содержимое:</b>\n"
+            )
+            if bld['money'] > 0:
+                res_text += f"• 💰 Деньги: {format_money(bld['money'])}\n"
+            if bld['acc_id']:
+                res_text += f"• 👕 Аксессуар ID: {bld['acc_id']}\n"
+            if bld['bg_id']:
+                res_text += f"• 🎨 Фон ID: {bld['bg_id']}\n"
+            if bld['skin_id']:
+                res_text += f"• 👤 Скин ID: {bld['skin_id']}\n"
+            if bld['is_plus']:
+                res_text += "• ⭐️ Подписка Гангстер Плюс\n"
+                
+            res_text += f"\n👥 Макс. активаций: {bld['max_uses'] if bld['max_uses'] > 0 else 'Безлимит'}\n"
+            if bld['target_user_id']:
+                res_text += f"🎯 Только для ID: {bld['target_user_id']}\n"
+            if bld['expires_hours']:
+                res_text += f"⏳ Срок действия: {bld['expires_hours']} ч.\n"
+                
+            res_text += f"\n👉 Нажмите на код для копирования: <code>{created_code}</code>"
+            
+            kb = [
+                [InlineKeyboardButton("➕ Создать еще один", callback_data="pb_reset")],
+                [InlineKeyboardButton("🎟️ Все промокоды", callback_data="pb_list_all")]
+            ]
+            await query.edit_message_text(res_text, reply_markup=InlineKeyboardMarkup(kb), parse_mode='HTML')
+        else:
+            await query.answer(msg, show_alert=True)
+            
+    elif data == "pb_list_all":
+        from main import promos_list_command
+        await promos_list_command(update, context)
 
 async def prompt_promocode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Запрашивает у пользователя ввод промокода"""

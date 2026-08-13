@@ -119,7 +119,7 @@ DEFAULT_ACCESSORIES = [
     },
     {
         "name": "джинсы тянки",
-        "type": "feet",
+        "type": "pants",
         "description": "модные джинсы тянки",
         "price": 200000,
         "image_file": "images/accesories_2.jpg",
@@ -170,6 +170,12 @@ def init_accessories_and_backgrounds():
     cursor = conn.cursor()
     
     try:
+        # Миграция таблицы user_equipped
+        cursor.execute("PRAGMA table_info(user_equipped)")
+        cols = [c[1] for c in cursor.fetchall()]
+        if 'pants_accessory' not in cols:
+            cursor.execute("ALTER TABLE user_equipped ADD COLUMN pants_accessory INTEGER DEFAULT NULL")
+
         # Добавляем стандартные скины - ОЧЕНЬ ВАЖНО
         for skin in DEFAULT_SKINS:
             cursor.execute('''
@@ -178,6 +184,9 @@ def init_accessories_and_backgrounds():
             ''', (skin['name'], skin['description'], skin['price'], skin['image_file']))
             logger.info(f"📦 скин инициализирован: {skin['name']}")
         
+        # Обновляем тип джинс в базе данных
+        cursor.execute("UPDATE accessories SET type = 'pants' WHERE name = 'джинсы тянки'")
+
         # Добавляем стандартные аксессуары (проверяем что их еще нет)
         for acc in DEFAULT_ACCESSORIES:
             cursor.execute('SELECT accessory_id FROM accessories WHERE name = ? AND type = ?', 
@@ -433,6 +442,8 @@ def equip_accessory(user_id, accessory_id):
                 cursor.execute('UPDATE user_equipped SET hand_accessory = ? WHERE user_id = ?', (accessory_id, user_id))
             elif acc_type == "body":
                 cursor.execute('UPDATE user_equipped SET body_accessory = ? WHERE user_id = ?', (accessory_id, user_id))
+            elif acc_type == "pants":
+                cursor.execute('UPDATE user_equipped SET pants_accessory = ? WHERE user_id = ?', (accessory_id, user_id))
             elif acc_type == "feet":
                 cursor.execute('UPDATE user_equipped SET feet_accessory = ? WHERE user_id = ?', (accessory_id, user_id))
         else:
@@ -443,6 +454,8 @@ def equip_accessory(user_id, accessory_id):
                 cursor.execute('INSERT INTO user_equipped (user_id, hand_accessory) VALUES (?, ?)', (user_id, accessory_id))
             elif acc_type == "body":
                 cursor.execute('INSERT INTO user_equipped (user_id, body_accessory) VALUES (?, ?)', (user_id, accessory_id))
+            elif acc_type == "pants":
+                cursor.execute('INSERT INTO user_equipped (user_id, pants_accessory) VALUES (?, ?)', (user_id, accessory_id))
             elif acc_type == "feet":
                 cursor.execute('INSERT INTO user_equipped (user_id, feet_accessory) VALUES (?, ?)', (user_id, accessory_id))
         
@@ -471,6 +484,8 @@ def unequip_accessory(user_id, acc_type):
             cursor.execute('UPDATE user_equipped SET hand_accessory = NULL WHERE user_id = ?', (user_id,))
         elif acc_type == "body":
             cursor.execute('UPDATE user_equipped SET body_accessory = NULL WHERE user_id = ?', (user_id,))
+        elif acc_type == "pants":
+            cursor.execute('UPDATE user_equipped SET pants_accessory = NULL WHERE user_id = ?', (user_id,))
         elif acc_type == "feet":
             cursor.execute('UPDATE user_equipped SET feet_accessory = NULL WHERE user_id = ?', (user_id,))
         
@@ -492,7 +507,11 @@ def get_user_equipped_accessories(user_id):
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cursor = conn.cursor()
     
-    cursor.execute('SELECT * FROM user_equipped WHERE user_id = ?', (user_id,))
+    cursor.execute('''
+        SELECT head_accessory, hand_accessory, body_accessory, pants_accessory, feet_accessory 
+        FROM user_equipped 
+        WHERE user_id = ?
+    ''', (user_id,))
     equipped = cursor.fetchone()
     conn.close()
     
@@ -500,9 +519,10 @@ def get_user_equipped_accessories(user_id):
         return None
     
     return {
-        'head': equipped[1],
-        'hand': equipped[2],
-        'body': equipped[3],
+        'head': equipped[0],
+        'hand': equipped[1],
+        'body': equipped[2],
+        'pants': equipped[3],
         'feet': equipped[4]
     }
 
@@ -517,6 +537,7 @@ def get_user_equipped_names(user_id):
             (SELECT name FROM accessories WHERE accessory_id = ue.head_accessory LIMIT 1) as head_name,
             (SELECT name FROM accessories WHERE accessory_id = ue.hand_accessory LIMIT 1) as hand_name,
             (SELECT name FROM accessories WHERE accessory_id = ue.body_accessory LIMIT 1) as body_name,
+            (SELECT name FROM accessories WHERE accessory_id = ue.pants_accessory LIMIT 1) as pants_name,
             (SELECT name FROM accessories WHERE accessory_id = ue.feet_accessory LIMIT 1) as feet_name
         FROM user_equipped ue
         WHERE ue.user_id = ?
@@ -526,13 +547,14 @@ def get_user_equipped_names(user_id):
     conn.close()
     
     if not result:
-        return {'head': None, 'hand': None, 'body': None, 'feet': None}
+        return {'head': None, 'hand': None, 'body': None, 'pants': None, 'feet': None}
     
     return {
         'head': result[0],
         'hand': result[1],
         'body': result[2],
-        'feet': result[3]
+        'pants': result[3],
+        'feet': result[4]
     }
 
 # Проверка, надет ли конкретный аксессуар
@@ -547,9 +569,10 @@ def is_accessory_equipped(user_id, accessory_id):
             head_accessory = ? OR 
             hand_accessory = ? OR 
             body_accessory = ? OR 
+            pants_accessory = ? OR
             feet_accessory = ?
         )
-    ''', (user_id, accessory_id, accessory_id, accessory_id, accessory_id))
+    ''', (user_id, accessory_id, accessory_id, accessory_id, accessory_id, accessory_id))
     
     result = cursor.fetchone()
     conn.close()
@@ -873,8 +896,8 @@ def unequip_user_skin(user_id: int):
 # ==========================================# 🎨 ОТОБРАЖЕНИЕ ПЕРСОНАЖА С АКСЕССУАРАМИ
 # ==========================================
 
-def create_character_with_accessories(user_id, output_file=None):
-    """Создает изображение персонажа с фоном и аксессуарами"""
+def create_character_with_accessories(user_id, output_file=None, preview_accessory_id=None):
+    """Создает изображение персонажа с фоном и аксессуарами (поддерживает превью конкретного предмета)"""
     if not PIL_AVAILABLE:
         return None
         
@@ -888,20 +911,42 @@ def create_character_with_accessories(user_id, output_file=None):
         conn = sqlite3.connect(DB_PATH, check_same_thread=False)
         cursor = conn.cursor()
         
+        # Гарантируем наличие колонки pants_accessory
+        cursor.execute("PRAGMA table_info(user_equipped)")
+        cols = [c[1] for c in cursor.fetchall()]
+        if 'pants_accessory' not in cols:
+            cursor.execute("ALTER TABLE user_equipped ADD COLUMN pants_accessory INTEGER DEFAULT NULL")
+            conn.commit()
+
         # Получаем фон и аксессуары одним запросом
         cursor.execute('''
-            SELECT ue.background_accessory, ue.head_accessory, ue.hand_accessory, ue.body_accessory, ue.feet_accessory
+            SELECT ue.background_accessory, ue.head_accessory, ue.hand_accessory, ue.body_accessory, ue.pants_accessory, ue.feet_accessory
             FROM user_equipped ue
             WHERE ue.user_id = ?
         ''', (user_id,))
         equipped_result = cursor.fetchone()
         
         bg_id = None
-        accessory_ids = []
+        slots = {'pants': None, 'feet': None, 'body': None, 'head': None, 'hand': None}
         if equipped_result:
             bg_id = equipped_result[0]
-            # Порядок наложения слоев: feet (джинсы/обувь) -> body (футболка поверх джинс) -> head (голова/маска) -> hand (оружие поверх всего)
-            accessory_ids = [equipped_result[4], equipped_result[3], equipped_result[1], equipped_result[2]]
+            slots['head'] = equipped_result[1]
+            slots['hand'] = equipped_result[2]
+            slots['body'] = equipped_result[3]
+            slots['pants'] = equipped_result[4]
+            slots['feet'] = equipped_result[5]
+            
+        # Если задан примеряемый предмет — заменяем в соответствующем слоте
+        if preview_accessory_id:
+            cursor.execute('SELECT type FROM accessories WHERE accessory_id = ?', (preview_accessory_id,))
+            acc_row = cursor.fetchone()
+            if acc_row:
+                p_type = acc_row[0]
+                if p_type in slots:
+                    slots[p_type] = preview_accessory_id
+
+        # Порядок наложения слоев: pants (джинсы/штаны) -> feet (обувь/кроссовки) -> body (футболка) -> head (голова/маска) -> hand (оружие)
+        accessory_ids = [slots['pants'], slots['feet'], slots['body'], slots['head'], slots['hand']]
         
         bg_file = None
         # 1. Проверяем, включен ли ДОМ как фон (он имеет приоритет, если пользователь включил опцию 'дом как фон')
@@ -996,142 +1041,11 @@ def create_character_with_accessories(user_id, output_file=None):
 # Создание персонажа с одним аксессуаром для предпросмотра в магазине
 def create_character_with_single_accessory(user_id, accessory_id, output_file='temp/temp_preview.png'):
     """Создает персонажа с одним конкретным аксессуаром для предпросмотра"""
-    if not PIL_AVAILABLE:
-        return None
-    
-    try:
-        # Обеспечиваем наличие папки temp
-        os.makedirs('temp', exist_ok=True)
-        # Получаем скин пользователя
-        base_image_path = get_user_skin(user_id)
-        
-        try:
-            base_image = Image.open(base_image_path).convert('RGBA')
-        except FileNotFoundError:
-            return None
-        
-        # Получаем информацию об аксессуаре
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute('SELECT image_file FROM accessories WHERE accessory_id = ?', (accessory_id,))
-        result = cursor.fetchone()
-        conn.close()
-        
-        if not result:
-            return None
-        
-        accessory_file = result[0]
-        
-        try:
-            # Загружаем аксессуар
-            accessory_image = Image.open(accessory_file)
-            
-            if accessory_image.mode != 'RGBA':
-                accessory_image = accessory_image.convert('RGBA')
-            
-            # Убеждаемся что размеры совпадают
-            if accessory_image.size != base_image.size:
-                accessory_image = accessory_image.resize(base_image.size, Image.Resampling.LANCZOS)
-            
-            # Накладываем аксессуар
-            base_image = Image.alpha_composite(base_image, accessory_image)
-        except Exception as e:
-            return None
-        
-        # Сохраняем
-        base_image = base_image.convert('RGB')
-        base_image.save(output_file, 'PNG')
-        return output_file
-    except Exception as e:
-        logger.error(f"Ошибка при создании персонажа с аксессуаром: {e}")
-        return None
+    return create_character_with_accessories(user_id, output_file=output_file, preview_accessory_id=accessory_id)
 
 def create_accessory_preview_with_background(user_id, accessory_id, output_file='temp/temp_accessory_preview.png'):
-    """Создает превью аксессуара с персонажем и его текущим фоном в размере 600х300"""
-    if not PIL_AVAILABLE:
-        return None
-    
-    try:
-        # Обеспечиваем наличие папки temp
-        os.makedirs('temp', exist_ok=True)
-        # Обеспечиваем наличие папки temp
-        os.makedirs('temp', exist_ok=True)
-        # Фиксированный размер для вывода
-        OUTPUT_WIDTH = 600
-        OUTPUT_HEIGHT = 300
-        
-        # Получаем текущий фон пользователя
-        background = get_user_background(user_id)
-        background_file = background[3] if background else 'images/default_background.jpg'
-        
-        # Загружаем фон и масштабируем до 600х300
-        try:
-            background_image = Image.open(background_file).convert('RGB')
-            # Масштабируем фон пропорционально до размера 600х300
-            background_image.thumbnail((OUTPUT_WIDTH, OUTPUT_HEIGHT), Image.Resampling.LANCZOS)
-            
-            # Создаем финальное изображение белого цвета
-            final_image = Image.new('RGB', (OUTPUT_WIDTH, OUTPUT_HEIGHT), color=(255, 255, 255))
-            
-            # Вставляем фон в центр
-            bg_x = (OUTPUT_WIDTH - background_image.width) // 2
-            bg_y = (OUTPUT_HEIGHT - background_image.height) // 2
-            final_image.paste(background_image, (bg_x, bg_y))
-            
-            background_image = final_image
-        except Exception:
-            background_image = Image.new('RGB', (OUTPUT_WIDTH, OUTPUT_HEIGHT), color=(255, 255, 255))
-        
-        # Получаем скин пользователя
-        skin_path = get_user_skin(user_id)
-        try:
-            character_image = Image.open(skin_path).convert('RGBA')
-        except Exception:
-            return None
-        
-        # Получаем аксессуар
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        cursor = conn.cursor()
-        cursor.execute('SELECT image_file FROM accessories WHERE accessory_id = ?', (accessory_id,))
-        result = cursor.fetchone()
-        conn.close()
-        
-        if not result:
-            return None
-        
-        accessory_file = result[0]
-        
-        try:
-            accessory_image = Image.open(accessory_file).convert('RGBA')
-        except Exception:
-            return None
-        
-        # Объединяем скин с аксессуаром (оба в их естественном размере)
-        if accessory_image.size != character_image.size:
-            accessory_image = accessory_image.resize(character_image.size, Image.Resampling.LANCZOS)
-        
-        character_with_accessory = Image.alpha_composite(character_image, accessory_image)
-        
-        # Масштабируем персонажа+аксессуар пропорционально до 600х300
-        character_with_accessory.thumbnail((OUTPUT_WIDTH, OUTPUT_HEIGHT), Image.Resampling.LANCZOS)
-        
-        # Создаем финальное изображение
-        final_image = Image.new('RGB', (OUTPUT_WIDTH, OUTPUT_HEIGHT), color=(255, 255, 255))
-        
-        # Вставляем фон (уже в размере 600х300 или меньше)
-        final_image.paste(background_image, (0, 0))
-        
-        # Вставляем персонажа в центр снизу
-        char_x = (OUTPUT_WIDTH - character_with_accessory.width) // 2
-        char_y = OUTPUT_HEIGHT - character_with_accessory.height
-        final_image.paste(character_with_accessory, (char_x, char_y), character_with_accessory)
-        
-        # Сохраняем результат
-        final_image.save(output_file, 'PNG')
-        return output_file
-    except Exception as e:
-        logger.error(f"Ошибка при создании превью аксессуара: {e}")
-        return None
+    """Создает превью аксессуара с персонажем и его текущим фоном"""
+    return create_character_with_accessories(user_id, output_file=output_file, preview_accessory_id=accessory_id)
 
 def create_background_preview(user_id, background_id, output_file='temp/temp_background_preview.png'):
     """Создает превью фона с персонажем и всеми текущими аксессуарами"""
@@ -1321,6 +1235,7 @@ async def _show_accessory_carousel(update: Update, context: ContextTypes.DEFAULT
             'head': '👒',
             'hand': '🖐️',
             'body': '📿',
+            'pants': '👖',
             'feet': '👟'
         }.get(acc_type, '📦')
         
@@ -1373,18 +1288,11 @@ async def _show_accessory_carousel(update: Update, context: ContextTypes.DEFAULT
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Создаем превью аксессуара с фоном
-    # Если аксессуар куплен но НЕ одет - показываем персонажа со всеми ДРУГИМИ одетыми аксессуарами
-    # Если аксессуар не куплен - всегда показываем с этим аксессуаром
+    # Создаем превью аксессуара с фоном (всегда подставляем примеряемый предмет поверх надетых вещей)
     acc_id = accessories[current_index][0] if accessories else None
     preview_file = None
     if acc_id:
-        if owned and not equipped:
-            # Если куплен но не одет - показываем персонажа со всеми одетыми аксессуарами (кроме этого)
-            preview_file = create_character_with_accessories(user_id, output_file='temp/temp_acc_preview_no_current.png')
-        else:
-            # Если не куплен или одет - показываем с этим аксессуаром
-            preview_file = create_accessory_preview_with_background(user_id, acc_id)
+        preview_file = create_accessory_preview_with_background(user_id, acc_id, output_file=f'temp/temp_acc_preview_{user_id}_{acc_id}.png')
     
     # Обновляем сообщение или отправляем новое
     try:
@@ -1645,6 +1553,7 @@ async def show_accessories_shop(update: Update, context: ContextTypes.DEFAULT_TY
             'head': '👒 на голову',
             'hand': '🖐️ на руки',
             'body': '📿 на тело',
+            'pants': '👖 штаны',
             'feet': '👟 на ноги'
         }
         
@@ -1858,6 +1767,7 @@ async def _show_accessories_by_type(update: Update, context: ContextTypes.DEFAUL
         'head': '👒 на голову',
         'hand': '🖐️ на руки',
         'body': '📿 на тело',
+        'pants': '👖 штаны',
         'feet': '👟 на ноги'
     }
     type_name = type_names.get(acc_type, acc_type)
@@ -1944,6 +1854,7 @@ async def handle_acc_view_details(update: Update, context: ContextTypes.DEFAULT_
         'head': '👒',
         'hand': '🖐️',
         'body': '📿',
+        'pants': '👖',
         'feet': '👟'
     }.get(acc_type, '📦')
     
@@ -1981,14 +1892,8 @@ async def handle_acc_view_details(update: Update, context: ContextTypes.DEFAULT_
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    # Создаем превью аксессуара с фоном
-    preview_file = None
-    if owned and not equipped:
-        # Если куплен но не одет - показываем персонажа со всеми одетыми аксессуарами (кроме этого)
-        preview_file = create_character_with_accessories(user_id, output_file='temp/temp_acc_preview_no_current.png')
-    else:
-        # Если не куплен или одет - показываем с этим аксессуаром
-        preview_file = create_accessory_preview_with_background(user_id, acc_id)
+    # Создаем превью аксессуара с фоном (всегда подставляем примеряемый предмет поверх надетых вещей)
+    preview_file = create_accessory_preview_with_background(user_id, acc_id, output_file=f'temp/temp_acc_preview_{user_id}_{acc_id}.png')
     
     # Отправляем/обновляем сообщение
     try:
@@ -2233,15 +2138,20 @@ async def handle_bg_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🎁 РАЗДАЧА «КРУТАЯ ФУТБОЛКА»
 # ==========================================
 
-DISTRIBUTION_START_TIME = datetime.datetime(2026, 8, 13, 12, 0, 0)
+MSK_TZ = datetime.timezone(datetime.timedelta(hours=3))
+DISTRIBUTION_START_TIME = datetime.datetime(2026, 8, 13, 12, 0, 0, tzinfo=MSK_TZ)
+
+def get_now_msk() -> datetime.datetime:
+    """Возвращает текущую дату и время в часовом поясе МСК (UTC+3)"""
+    return datetime.datetime.now(datetime.timezone.utc).astimezone(MSK_TZ)
 
 def is_distribution_open() -> bool:
     """Проверяет, открыта ли раздача по времени (13 августа 2026 года в 12:00 МСК)"""
-    return datetime.datetime.now() >= DISTRIBUTION_START_TIME
+    return get_now_msk() >= DISTRIBUTION_START_TIME
 
 def get_time_until_distribution_start() -> str:
     """Возвращает отформатированную строку обратного отсчета до старта раздачи"""
-    now = datetime.datetime.now()
+    now = get_now_msk()
     diff = DISTRIBUTION_START_TIME - now
     if diff.total_seconds() <= 0:
         return "00 ч. 00 мин. 00 сек."

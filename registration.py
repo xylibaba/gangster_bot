@@ -298,6 +298,7 @@ def init_db():
             head_accessory INTEGER DEFAULT NULL,
             hand_accessory INTEGER DEFAULT NULL,
             body_accessory INTEGER DEFAULT NULL,
+            pants_accessory INTEGER DEFAULT NULL,
             feet_accessory INTEGER DEFAULT NULL,
             background_accessory INTEGER DEFAULT NULL,
             FOREIGN KEY (user_id) REFERENCES users (user_id)
