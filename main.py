@@ -2266,8 +2266,16 @@ async def handle_all_text_messages_wrapper(update: Update, context: ContextTypes
         await cancel_milking(update, context)
         return
 
-    # если сообщение не обработано, показываем неизвестную команду
+    # если сообщение не обработано, проверяем не является ли оно промокодом
     if not handled:
+        raw_text = update.message.text.strip()
+        clean_code = raw_text.replace('-', '').replace('_', '')
+        if len(raw_text) >= 3 and len(raw_text.split()) == 1 and clean_code.isalnum():
+            from donations import activate_promocode
+            success, msg = activate_promocode(user_id, raw_text)
+            await update.message.reply_text(msg, parse_mode='HTML')
+            return
+
         # если были активные сообщения с inline-кнопками (например, меню работы),
         # делаем их кнопки неактивными и уведомляем пользователя
         try:
