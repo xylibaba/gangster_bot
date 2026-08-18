@@ -33,7 +33,8 @@ async def create_payment(
     user_id: int or str,
     payment_method: str = None,
     currency: str = "RUB",
-    metadata: dict = None
+    metadata: dict = None,
+    test: bool = False
 ) -> dict:
     """
     Создает платеж в RollyPay.
@@ -45,6 +46,7 @@ async def create_payment(
     :param payment_method: 'sbp', 'crypto', 'card', 'intl_card' или None (общая форма)
     :param currency: 'RUB' (или 'EUR' для intl_card)
     :param metadata: доп. метаданные
+    :param test: True для тестового режима (Sandbox без списания реальных денег)
     :return: dict с результатом (ok: True/False, pay_url, payment_id и т.д.)
     """
     api_key = os.getenv("ROLLYPAY_API_KEY", ROLLYPAY_API_KEY).strip()
@@ -70,6 +72,9 @@ async def create_payment(
         
     if metadata:
         payload["metadata"] = metadata
+
+    if test:
+        payload["test"] = True
 
     url = f"{ROLLYPAY_BASE_URL.rstrip('/')}/api/v1/payments"
     headers = get_headers()
