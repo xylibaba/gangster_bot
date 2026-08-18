@@ -13,7 +13,7 @@ import httpx
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, LabeledPrice, InputMediaPhoto
 from telegram.ext import ContextTypes
-from registration import get_user, update_user_money, DB_PATH
+from registration import get_user, update_user_money, is_main_admin, DB_PATH
 from utils import safe_delete_message, format_money, maybe_send_channel_reminder
 from scam import add_referral_donation_earnings
 
@@ -242,9 +242,14 @@ async def handle_buy_pack_selection(update: Update, context: ContextTypes.DEFAUL
     keyboard = [
         [InlineKeyboardButton(f"💳 СБП ({rub_price} ₽)", callback_data=f"pay_rollypay_sbp_{index}")],
         [InlineKeyboardButton(f"💎 Криптовалюта / CryptoBot / xRocket ({pack['price_crypto']}$)", callback_data=f"pay_rollypay_crypto_{index}")],
-        [InlineKeyboardButton(f"⭐️ Telegram Stars ({pack['price_stars']} зв.)", callback_data=f"pay_stars_{index}")],
-        [InlineKeyboardButton("назад", callback_data="pack_back")]
+        [InlineKeyboardButton(f"⭐️ Telegram Stars ({pack['price_stars']} зв.)", callback_data=f"pay_stars_{index}")]
     ]
+    
+    # 🧪 Для Главного Админа добавляем кнопку бесплатного тестового платежа (Sandbox)
+    if is_main_admin(user_id):
+        keyboard.append([InlineKeyboardButton("🧪 Тестовый платёж (Sandbox 0₽)", callback_data=f"pay_rollypay_test_{index}")])
+        
+    keyboard.append([InlineKeyboardButton("назад", callback_data="pack_back")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     try:
@@ -433,10 +438,15 @@ async def start_pack_crypto_payment(update: Update, context: ContextTypes.DEFAUL
             parse_mode='html'
         )
 
-# запуск оплаты через RollyPay (СБП, Криптовалюта, CryptoBot, xRocket)
-async def start_pack_rollypay_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, payment_method: str = "sbp"):
+# запуск оплаты через RollyPay (СБП, Криптовалюта, CryptoBot, xRocket, Тестовый режим)
+async def start_pack_rollypay_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, payment_method: str = "sbp", is_test: bool = False):
     query = update.callback_query
     user_id = update.effective_user.id
+    
+    # 🔒 Если запрошен тестовый платёж, строго проверяем права главного админа
+    if is_test and not is_main_admin(user_id):
+        await query.answer("❌ Тестовый режим доступен только Главному Админу!", show_alert=True)
+        return
     
     try:
         parts = query.data.split("_")
@@ -449,10 +459,15 @@ async def start_pack_rollypay_payment(update: Update, context: ContextTypes.DEFA
         return
 
     pack = packs[index]
-    order_id = f"pack_{index}_{user_id}_{int(time.time())}"
+    prefix = "test_pack" if is_test else "pack"
+    order_id = f"{prefix}_{index}_{user_id}_{int(time.time())}"
     amount_rub = pack.get('price_rub', 100)
     
-    if payment_method == "crypto":
+    if is_test:
+        desc = f"🧪 Тестовая покупка «{pack['title']}» (Sandbox 0₽)"
+        method_title = "🧪 Тестовый платёж (Sandbox 0₽)"
+        actual_method = "sbp"
+    elif payment_method == "crypto":
         desc = f"Покупка «{pack['title']}» (Crypto / CryptoBot / xRocket)"
         method_title = "Криптовалюта (Crypto / CryptoBot / xRocket)"
         actual_method = "crypto"
@@ -468,7 +483,8 @@ async def start_pack_rollypay_payment(update: Update, context: ContextTypes.DEFA
         user_id=user_id,
         payment_method=actual_method,
         currency="RUB",
-        metadata={"user_id": user_id, "pack_index": index}
+        metadata={"user_id": user_id, "pack_index": index, "is_test": is_test},
+        test=is_test
     )
 
     if not res.get("ok"):
@@ -493,19 +509,21 @@ async def start_pack_rollypay_payment(update: Update, context: ContextTypes.DEFA
         'created_at': time.time(),
         'chat_id': update.effective_chat.id,
         'message_id': None,
-        'payment_method': payment_method
+        'payment_method': payment_method,
+        'is_test': is_test
     }
 
+    test_notice = "\n\n⚠️ <i>Это тестовый счет Sandbox (деньги не списываются). На открывшейся странице нажмите «Оплатить успешно» для проверки.</i>" if is_test else ""
     text = (
         f"💳 <b>счет на оплату: {pack['title']}</b>\n\n"
         f"• способ оплаты: <b>{method_title}</b>\n"
         f"• сумма к оплате: <b>{amount_rub} ₽</b>\n"
-        f"• ID платежа: <code>{payment_id}</code>\n\n"
+        f"• ID платежа: <code>{payment_id}</code>{test_notice}\n\n"
         f"👉 <i>нажмите «оплатить» ниже для перехода на форму оплаты. После завершения перевода бот автоматически выдаст награду (или нажмите «проверить оплату»).</i>"
     )
 
     keyboard = [
-        [InlineKeyboardButton("💳 оплатить", url=pay_url)],
+        [InlineKeyboardButton("💳 оплатить (Sandbox)" if is_test else "💳 оплатить", url=pay_url)],
         [InlineKeyboardButton("🔄 проверить оплату", callback_data=f"check_rollypay_{payment_id}_{index}")],
         [InlineKeyboardButton("⬅️ назад к наборам", callback_data="pack_back")]
     ]

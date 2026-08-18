@@ -2422,6 +2422,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("pack_buy_"):
             await handle_buy_pack_selection(update, context)
             return
+        elif data.startswith("pay_rollypay_test_"):
+            await start_pack_rollypay_payment(update, context, "sbp", is_test=True)
+            return
         elif data.startswith("pay_rollypay_sbp_"):
             await start_pack_rollypay_payment(update, context, "sbp")
             return
