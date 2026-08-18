@@ -23,11 +23,15 @@ load_dotenv()
 # настройка логгера
 logger = logging.getLogger(__name__)
 
+import rollypay_client
+
 # ==========================================
-# Глобальное хранилище ожидающих крипто-платежей
+# Глобальное хранилище ожидающих платежей
 # ==========================================
 # Структура: {user_id: {pack_index: {invoice_id, created_at, message_id, chat_id}}}
 pending_crypto_payments = {}
+# Структура RollyPay: {user_id: {payment_id: {payment_id, pack_index, order_id, user_id, amount, created_at, chat_id, message_id, payment_method}}}
+pending_rollypay_payments = {}
 
 # ==========================================
 # 🔑 настройки платежных систем
@@ -47,7 +51,8 @@ packs = [
         "id": "molodoy",
         "title": "📦 молодой",
         "description": "• 👕 скин «молодой» (одевается сразу, снимается дома)\n• 💰 10.000.000$\n• ⚡️ х2 со всего заработка на 24 часа",
-        "price_stars": 44,
+        "price_rub": 100,
+        "price_stars": 52,
         "price_crypto": 1.0,
         "reward_money": 10000000,
         "is_subscription": False,
@@ -57,7 +62,8 @@ packs = [
         "id": "gangster_plus",
         "title": "💎 гангстер плюс",
         "description": "• 💬 VIP-чат с админами\n• ⚡️ х4 прибыль со всех работ\n• 💎 алмаз около ника\n• 💰 5.000.000$ каждую неделю (автоматически)\n\n💡 <i>наполнение подписки будет меняться в лучшую сторону!</i>\n✨ <i>все действует пока активна подписка (1 месяц)</i>",
-        "price_stars": 65,
+        "price_rub": 150,
+        "price_stars": 77,
         "price_crypto": 1.5,
         "reward_money": 0,
         "is_subscription": True,
@@ -108,10 +114,11 @@ async def show_pack(update: Update, context: ContextTypes.DEFAULT_TYPE, index: i
     
     has_plus = is_gangster_plus_active(user_id) if pack['is_subscription'] else False
     
+    rub_price = pack.get('price_rub', 100)
     text = (
         f"<b>{pack['title']}</b>\n\n"
         f"{pack['description']}\n\n"
-        f"💰 цена: <b>{pack['price_stars']} ⭐️</b> или <b>{pack['price_crypto']}$ (crypto)</b>"
+        f"💰 цена: <b>{rub_price} ₽ (СБП)</b> | <b>{pack['price_crypto']}$ (crypto)</b> | <b>{pack['price_stars']} ⭐️</b>"
     )
     if has_plus:
         text += "\n\n✅ <b>у вас активна эта подписка!</b>"
@@ -228,12 +235,14 @@ async def handle_buy_pack_selection(update: Update, context: ContextTypes.DEFAUL
     
     text = (
         f"💳 <b>оплата: {pack['title']}</b>\n\n"
-        f"выберите способ оплаты:"
+        f"выберите удобный способ оплаты:"
     )
     
+    rub_price = pack.get('price_rub', 100)
     keyboard = [
-        [InlineKeyboardButton(f"⭐️ telegram stars ({pack['price_stars']} зв.)", callback_data=f"pay_stars_{index}")],
-        [InlineKeyboardButton(f"💎 crypto bot ({pack['price_crypto']}$)", callback_data=f"pay_crypto_{index}")],
+        [InlineKeyboardButton(f"💳 СБП ({rub_price} ₽)", callback_data=f"pay_rollypay_sbp_{index}")],
+        [InlineKeyboardButton(f"💎 Криптовалюта / CryptoBot / xRocket ({pack['price_crypto']}$)", callback_data=f"pay_rollypay_crypto_{index}")],
+        [InlineKeyboardButton(f"⭐️ Telegram Stars ({pack['price_stars']} зв.)", callback_data=f"pay_stars_{index}")],
         [InlineKeyboardButton("назад", callback_data="pack_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -423,6 +432,181 @@ async def start_pack_crypto_payment(update: Update, context: ContextTypes.DEFAUL
             text=f"❌ <b>ошибка соединения</b>\n\n{str(e)}",
             parse_mode='html'
         )
+
+# запуск оплаты через RollyPay (СБП, Криптовалюта, CryptoBot, xRocket)
+async def start_pack_rollypay_payment(update: Update, context: ContextTypes.DEFAULT_TYPE, payment_method: str = "sbp"):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    try:
+        parts = query.data.split("_")
+        index = int(parts[-1])
+        if not (0 <= index < len(packs)):
+            logger.warning(f"Invalid pack index: {index}")
+            return
+    except Exception as e:
+        logger.warning(f"Error parsing rollypay payment data: {e}")
+        return
+
+    pack = packs[index]
+    order_id = f"pack_{index}_{user_id}_{int(time.time())}"
+    amount_rub = pack.get('price_rub', 100)
+    
+    if payment_method == "crypto":
+        desc = f"Покупка «{pack['title']}» (Crypto / CryptoBot / xRocket)"
+        method_title = "Криптовалюта (Crypto / CryptoBot / xRocket)"
+        actual_method = "crypto"
+    else:
+        desc = f"Покупка «{pack['title']}» (СБП)"
+        method_title = "СБП (Система быстрых платежей)"
+        actual_method = "sbp"
+
+    res = await rollypay_client.create_payment(
+        amount=amount_rub,
+        description=desc,
+        order_id=order_id,
+        user_id=user_id,
+        payment_method=actual_method,
+        currency="RUB",
+        metadata={"user_id": user_id, "pack_index": index}
+    )
+
+    if not res.get("ok"):
+        err = res.get("error", "Неизвестная ошибка")
+        await query.answer(f"❌ {err}", show_alert=True)
+        return
+
+    payment_id = res["payment_id"]
+    pay_url = res["pay_url"]
+    
+    # Сохраняем в глобальное хранилище ожидающих платежей
+    if user_id not in pending_rollypay_payments:
+        pending_rollypay_payments[user_id] = {}
+        
+    pending_rollypay_payments[user_id][payment_id] = {
+        'payment_id': payment_id,
+        'order_id': order_id,
+        'pack_index': index,
+        'user_id': user_id,
+        'amount': amount_rub,
+        'currency': 'RUB',
+        'created_at': time.time(),
+        'chat_id': update.effective_chat.id,
+        'message_id': None,
+        'payment_method': payment_method
+    }
+
+    text = (
+        f"💳 <b>счет на оплату: {pack['title']}</b>\n\n"
+        f"• способ оплаты: <b>{method_title}</b>\n"
+        f"• сумма к оплате: <b>{amount_rub} ₽</b>\n"
+        f"• ID платежа: <code>{payment_id}</code>\n\n"
+        f"👉 <i>нажмите «оплатить» ниже для перехода на форму оплаты. После завершения перевода бот автоматически выдаст награду (или нажмите «проверить оплату»).</i>"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("💳 оплатить", url=pay_url)],
+        [InlineKeyboardButton("🔄 проверить оплату", callback_data=f"check_rollypay_{payment_id}_{index}")],
+        [InlineKeyboardButton("⬅️ назад к наборам", callback_data="pack_back")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    try:
+        msg = await query.edit_message_caption(caption=text, reply_markup=reply_markup, parse_mode='html')
+        pending_rollypay_payments[user_id][payment_id]['message_id'] = msg.message_id
+    except Exception:
+        msg = await query.edit_message_text(text=text, reply_markup=reply_markup, parse_mode='html')
+        pending_rollypay_payments[user_id][payment_id]['message_id'] = msg.message_id
+
+# ручная проверка платежа RollyPay по кнопке
+async def handle_check_rollypay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = update.effective_user.id
+    
+    try:
+        parts = query.data.split("_")
+        # format: check_rollypay_{payment_id}_{pack_index}
+        payment_id = parts[2]
+        pack_index = int(parts[3])
+    except Exception as e:
+        logger.error(f"Error parsing check_rollypay callback: {e}")
+        await query.answer("❌ Ошибка формата запроса", show_alert=True)
+        return
+
+    status_res = await rollypay_client.get_payment_status(payment_id)
+    if not status_res.get("ok"):
+        await query.answer("⚠️ Не удалось проверить статус платежа, попробуйте позже", show_alert=True)
+        return
+
+    status = status_res.get("status")
+    if status == "paid":
+        await query.answer("✅ Оплата подтверждена!")
+        success_msg = await apply_pack_rewards(user_id, pack_index)
+        pack = packs[pack_index]
+        amount = pack.get('price_rub', 100)
+        add_donation(user_id, amount, "RUB", "rollypay", "completed")
+        
+        # Удаляем из pending
+        if user_id in pending_rollypay_payments and payment_id in pending_rollypay_payments[user_id]:
+            del pending_rollypay_payments[user_id][payment_id]
+            
+        try:
+            await query.edit_message_caption(caption=success_msg, reply_markup=None, parse_mode='html')
+        except Exception:
+            await query.edit_message_text(text=success_msg, reply_markup=None, parse_mode='html')
+    elif status in ["created", "processing"]:
+        await query.answer("⏳ Оплата еще не поступила. Если вы уже перевели средства, подождите 1-2 минуты и проверьте снова.", show_alert=True)
+    else:
+        await query.answer(f"❌ Статус платежа: {status} (не оплачен)", show_alert=True)
+
+# автоматическая фоновая проверка платежей RollyPay
+async def check_all_pending_rollypay_payments(context: ContextTypes.DEFAULT_TYPE):
+    global pending_rollypay_payments
+    bot = context.bot
+    
+    users = list(pending_rollypay_payments.keys())
+    now = time.time()
+    
+    for user_id in users:
+        p_ids = list(pending_rollypay_payments.get(user_id, {}).keys())
+        for payment_id in p_ids:
+            p_info = pending_rollypay_payments[user_id].get(payment_id)
+            if not p_info:
+                continue
+                
+            # Истечение через 24 часа
+            if now - p_info.get('created_at', now) > 86400:
+                del pending_rollypay_payments[user_id][payment_id]
+                continue
+                
+            pack_index = p_info['pack_index']
+            chat_id = p_info.get('chat_id')
+            message_id = p_info.get('message_id')
+            
+            try:
+                res = await rollypay_client.get_payment_status(payment_id)
+                if res.get("ok") and res.get("status") == "paid":
+                    logger.info(f"RollyPay auto-check confirmed payment {payment_id} for user {user_id}")
+                    success_msg = await apply_pack_rewards(user_id, pack_index)
+                    pack = packs[pack_index]
+                    amount = pack.get('price_rub', 100)
+                    add_donation(user_id, amount, "RUB", "rollypay", "completed")
+                    
+                    del pending_rollypay_payments[user_id][payment_id]
+                    
+                    if chat_id and message_id:
+                        try:
+                            await bot.edit_message_caption(chat_id=chat_id, message_id=message_id, caption=success_msg, parse_mode='html')
+                        except Exception:
+                            try:
+                                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=success_msg, parse_mode='html')
+                            except Exception:
+                                await bot.send_message(chat_id=chat_id, text=success_msg, parse_mode='html')
+                    elif chat_id:
+                        await bot.send_message(chat_id=chat_id, text=success_msg, parse_mode='html')
+            except Exception as e:
+                logger.error(f"Error in RollyPay auto-check for {payment_id}: {e}")
+
 
 # pre-checkout handler
 async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

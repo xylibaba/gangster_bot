@@ -46,6 +46,7 @@ from donations import (
     show_donation_menu, pre_checkout_handler,
     successful_payment_handler,
     handle_pack_navigation, handle_buy_pack_selection, start_pack_stars_payment, start_pack_crypto_payment,
+    start_pack_rollypay_payment, handle_check_rollypay_callback, check_all_pending_rollypay_payments,
     handle_back_to_packs, check_payment_command, check_all_pending_crypto_payments,
     prompt_promocode, activate_promocode, process_gangster_plus_weekly_payouts
 )
@@ -2421,6 +2422,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data.startswith("pack_buy_"):
             await handle_buy_pack_selection(update, context)
             return
+        elif data.startswith("pay_rollypay_sbp_"):
+            await start_pack_rollypay_payment(update, context, "sbp")
+            return
+        elif data.startswith("pay_rollypay_crypto_"):
+            await start_pack_rollypay_payment(update, context, "crypto")
+            return
+        elif data.startswith("pay_rollypay_"):
+            await start_pack_rollypay_payment(update, context, "sbp")
+            return
+        elif data.startswith("check_rollypay_"):
+            await handle_check_rollypay_callback(update, context)
+            return
         elif data.startswith("pay_stars_"):
             await start_pack_stars_payment(update, context)
             return
@@ -3269,6 +3282,7 @@ def main():
     # Регистрируем фоновую задачу для проверки крипто-платежей каждые 30 секунд
     job_queue = application.job_queue
     job_queue.run_repeating(check_all_pending_crypto_payments, interval=30, first=5)
+    job_queue.run_repeating(check_all_pending_rollypay_payments, interval=20, first=5)
     job_queue.run_repeating(process_gangster_plus_weekly_payouts, interval=3600, first=10)
     
     print("✅ бот запущен и готов к работе!")

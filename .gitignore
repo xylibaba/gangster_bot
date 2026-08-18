@@ -24,4 +24,5 @@ temp/
 *.sqlite
 *.sqlite3
 data/*.db
-!data/gangster_bot.db
+data/*.sqlite
+data/*.sqlite3
